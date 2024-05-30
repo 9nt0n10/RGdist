@@ -207,12 +207,12 @@ rownames(spots) <- NULL
 h1000_logcounts <- as.matrix(assays(spe)$logcounts)
 
 # Inizializzazione delle variabili
-cor_before <- numeric(nrow(spots))
-pval_before <- numeric(nrow(spots))
+cor_before <- numeric(nrow(h1000_logcounts))
+pval_before <- numeric(nrow(h1000_logcounts))
 spot_median_gs <- data.frame(arrayrow = numeric(), arraycolumn = numeric(), median_rank = numeric())
 
 # Iterazione su tutti i punti
-for (j in 1697) {
+for (j in 1:nrow(spots)) {
   distances <- sqrt((spots[, 5] - spots[j, 5])^2 + (spots[, 6] - spots[j, 6])^2)
   
   # Iterazione su tutti i geni
