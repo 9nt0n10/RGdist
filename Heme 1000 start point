@@ -207,12 +207,12 @@ rownames(spots) <- NULL
 h1000_logcounts <- as.matrix(assays(spe)$logcounts)
 
 # Inizializzazione delle variabili
-cor_before <- numeric(nrow(h1000_logcounts))
-pval_before <- numeric(nrow(h1000_logcounts))
+cor_before <- numeric(nrow(spots))
+pval_before <- numeric(nrow(spots))
 spot_median_gs <- data.frame(arrayrow = numeric(), arraycolumn = numeric(), median_rank = numeric())
 
 # Iterazione su tutti i punti
-for (j in 1:nrow(spots)) {
+for (j in 1697) {
   distances <- sqrt((spots[, 5] - spots[j, 5])^2 + (spots[, 6] - spots[j, 6])^2)
   
   # Iterazione su tutti i geni
@@ -230,13 +230,26 @@ for (j in 1:nrow(spots)) {
   }
   
   # Aggiornamento dei risultati della correlazione
-  genes_heme <- data.frame(Name = names(cor_before), Correlation = cor_before)
-  ranking <- rank(abs(genes_heme$Correlation))
+  genes_heme <- data.frame(Name = rownames(h1000_logcounts),
+                             Correlation = cor_before
+  )
+  
+  for (i in 1:nrow(genes_heme)) {
+    genes_heme[i, 1] <- gene_table[which(genes_heme[i, 1] == gene_table[, 1]), 2]
+  }
+  
+  ranking <- rank(abs(genes_heme$Correlation), ties.method = c("random"))
   genes_heme$ranking_correlation <- ranking
   
-  # Calcolo del punto di iniezione più probabile
-  common_genes <- intersect(paper_up$names, paper_down$names, genes_heme$Name)
-  gene_heme_intersect <- genes_heme[genes_heme$Name %in% common_genes, ]
-  spot_median_gs[j, 1:2] <- spots[j, 5:6]
-  spot_median_gs[j, 3] <- median(gene_heme_intersect$ranking_correlation)
+  common_genes_neg_corr <- intersect(paper_up$names, genes_heme$Name)
+  common_genes_neg_corr <- common_genes_neg_corr[genes_heme$Correlation[match(common_genes_neg_corr, genes_heme$Name)] < 0]
+  
+  common_genes_pos_corr <- intersect(paper_down$names, genes_heme$Name)
+  common_genes_pos_corr <- common_genes_pos_corr[genes_heme$Correlation[match(common_genes_pos_corr, genes_heme$Name)] > 0]
+  
+  all_common_genes <- unique(c(common_genes_neg_corr, common_genes_pos_corr))
+  gene_heme_intersect <- genes_heme[genes_heme$Name %in% all_common_genes, ]
+  spot_median_gs[j,1] <- spots[j,5]
+  spot_median_gs[j,2] <- spots[j,6]
+  spot_median_gs[j,3] <- median(gene_heme_intersect$ranking_correlation)
 }
