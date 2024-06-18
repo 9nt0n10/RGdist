@@ -2,19 +2,20 @@
   title: "Analysis - Heme 1000"
 output: html_notebook
 ---
-  
-  # Data Preprocessing
+# Questo codice calcola la mediana del valore assoluto delle correlazioni tra l'espressione genica e la distanza dal centro, considerando ogni spot del tessuto come centro a turno. In questo modo, permette di visualizzare l'andamento di queste correlazioni lungo il tessuto.  
+
+# Data Preprocessing
   
   ```{r}
 
 library(SpatialExperiment)
 library(rtracklayer)
-library(lobstr)
 library(readr)
 library(scater)
 library(ggspavis)
 library(sva)
-library(plyr)
+library(foreach)
+library(doParallel)
 
 ```
 
@@ -23,7 +24,7 @@ library(plyr)
 ```{r}
 
 spe <- SpatialExperiment::read10xVisium(
-  samples = "C:/Users/Antonio/Laboratorio/R_wd/SpatialTranscriptomics_Unisannio/SpatialTranscriptomics/samples/heme_1000/outs/",
+  samples = "path_to_spe_folder/SpatialTranscriptomics/samples/sample_name/outs/",
   sample_id = "heme_1000",
   type = c("HDF5", "sparse"),
   data = "filtered",
@@ -44,7 +45,6 @@ spe$sum_umi <- colSums(counts(spe))
 spe$sum_gene <- colSums(counts(spe) > 0)
 ```
 
-
 Reference genome alignment 
 
 ```{r}
@@ -52,7 +52,7 @@ Reference genome alignment
 
 gtf <-                                           
   rtracklayer::import(
-    "C:/Users/Antonio/Laboratorio/R_wd/SpatialTranscriptomics_Unisannio/SpatialTranscriptomics/gencode.vM23.annotation/gencode.vM23.annotation.gtf"
+    "/path/to/.gtf"
   )
 
 gtf <- gtf[gtf$type == "gene"]                   
@@ -72,18 +72,17 @@ rowData(spe)$gene_search <- paste0(
 
 ```
 
-
 ## Anatomy info and injection site coords 
 
 ```{r}
 
-spots <- read_csv("C:/Users/Antonio/Laboratorio/R_wd/SpatialTranscriptomics_Unisannio/SpatialTranscriptomics/samples/heme_1000/outs/spatial/tissue_positions_list.csv", col_names = FALSE)
+spots <- read_csv("path_to_spe_folder/SpatialTranscriptomics/samples/sample_name/outs/spatial/tissue_positions_list.csv", col_names = FALSE)
 names(spots) <- c("Barcode", "in_tissue", "arrary_row", "array_col", "pixel_row", "pixel_col")
 spots <- subset(spots, in_tissue == 1) # here we remove spots not covered by tissue
 
 
-anatomy <- merge(read_csv("C:/Users/Antonio/Laboratorio/R_wd/SpatialTranscriptomics_Unisannio/SpatialTranscriptomics/samples/heme_1000/heme_1000_anatomy.csv"),
-                 read_csv("C:/Users/Antonio/Laboratorio/R_wd/SpatialTranscriptomics_Unisannio/SpatialTranscriptomics/samples/heme_1000/heme_1000_injection_site.csv"),
+anatomy <- merge(read_csv("path_to_spe_folder/SpatialTranscriptomics/samples/sample_name/sample_name_anatomy.csv"),
+                 read_csv("path_to_spe_folder/SpatialTranscriptomics/samples/sample_name/sample_name_injection_site.csv"),
                  by = "Barcode")
 
 spots <- merge(spots, anatomy, by = "Barcode")
@@ -94,7 +93,6 @@ spe$anatomy <- spots$anatomy
 spe$inj_site <- spots$injection_site
 
 ```
-
 
 ## Quality Control and data filtering
 
@@ -115,7 +113,6 @@ hist(colData(spe)$detected, breaks = 20)
 spe <- spe[!is_mito, ]
 ```
 
-
 NAs spots: spots that are not assigned to any anatomical cluster. This clustering was manually made by the dataset authors, some spots were not assigned to any cluster and since this information is crucial for our further analysis, we decided to remove them. 
 
 ```{r}
@@ -125,7 +122,6 @@ spe <- spe[, -NA_spot, drop = FALSE]
 spots <- spots[-NA_spot, ]
 
 ```
-
 
 We also need to remove genes that are not expressed at all across the whole tissue. 
 
@@ -177,7 +173,6 @@ spe <- spe[-no_rel, , drop = FALSE]
 
 ```
 
-
 ## Normalization of counts
 
 In our object spe the only available assay is "counts" (assayNames(spe)). Normalization is an essential step in an RNA-Seq analysis, in which the read count matrix is transformed to allow for meaningful comparisons of counts across samples.
@@ -211,9 +206,6 @@ rownames(spots) <- NULL
 
 h1000_logcounts <- as.matrix(assays(spe)$logcounts)
 
-library(foreach)
-library(doParallel)
-
 # Imposta il numero di core da utilizzare (puoi impostarlo a qualsiasi valore in base alla tua CPU)
 num_cores <- 50  # Ad esempio, utilizza 4 core
 
@@ -221,11 +213,8 @@ num_cores <- 50  # Ad esempio, utilizza 4 core
 cl <- makeCluster(num_cores)
 registerDoParallel(cl)
 
-# Inizializza i vettori risultato
-# spot_mean <- data.frame(arrayrow = numeric(), arraycolumn = numeric(), mean_cor = numeric())
-
 # Iterazione su tutti i punti
-spot_mean <- foreach(j = 1:nrow(spots), .combine = rbind, .packages = c('foreach', 'doParallel')) %dopar% {
+spot_median <- foreach(j = 1:nrow(spots), .combine = rbind, .packages = c('foreach', 'doParallel')) %dopar% {
   distances <- sqrt((spots[, 5] - spots[j, 5])^2 + (spots[, 6] - spots[j, 6])^2)
   
   # Inizializza i vettori per la correlazione e il p-value
@@ -250,30 +239,29 @@ spot_mean <- foreach(j = 1:nrow(spots), .combine = rbind, .packages = c('foreach
   significant_genes <- which(pval_before < 0.05)  # Filtra per p-value < 0.05
   
   # Calcola la correlazione assoluta solo per i geni significativi
-  mean_cor <- mean(abs(cor_before[significant_genes]))
+  median_cor <- median(abs(cor_before[significant_genes]))
   
   # Restituisci il risultato
-  data.frame(arrayrow = spots[j, 5], arraycolumn = spots[j, 6], mean_cor = mean_cor)
+  data.frame(arrayrow = spots[j, 5], arraycolumn = spots[j, 6], median_cor = median_cor)
 }
 
 # Arresta il cluster parallelo
 stopCluster(cl)
 
-# Stampa i risultati
-print(spot_mean)
-
-
 # Crea un dataframe per i dati della mappa del tessuto e della correlazione media
 map_data <- data.frame(
   x = spots$pixel_col,
   y = spots$pixel_row,
-  mean_correlation = spots_mean$mean_cor
+  median_correlation = spots_median$median_cor
 )
 
-# Crea il grafico
-ggplot(map_data, aes(x = x, y = y, fill = mean_correlation)) +
+# Plot
+ggplot(map_data, aes(x = x, y = y, fill = median_correlation)) +
   geom_point(shape = 21, size = 3) +
   scale_fill_gradient(low = "blue", high = "red") +
-  labs(x = "Colonna", y = "Riga", fill = "Correlazione Media") +
+  labs(x = "Colonna", y = "Riga", fill = "Mediana della Correlazione") +
   theme_minimal() +
   ylim(max(map_data$y), min(map_data$y))
+
+#prova con batch correction e senza selezione di pvalue
+
