@@ -163,6 +163,9 @@ cor_results <- foreach(j = 1:nrow(spots_heme_1000), .combine = rbind, .packages 
 
 stopCluster(cl)
 
+# Correggi i p-value con la FDR una sola volta
+cor_results$pval_corrected <- p.adjust(cor_results$pval_before, method = "fdr")
+                        
 # Filtra il dataframe
 
 cor_nodup <- aggregate(. ~ gene_id, data = cor_results, FUN = mean)
@@ -217,8 +220,11 @@ ring_median_heme_1000 <- foreach(j = 1:nrow(spots_heme_1000), .combine = rbind, 
     }
   }
   
-  # Filtra i geni in base al p-value
-  significant_genes <- which(pval_before < 0.05)  # Filtra per p-value < 0.05
+  # Correggi i p-value con la FDR
+  pval_corrected <- p.adjust(pval_before, method = "fdr")
+  
+  # Filtra i geni in base al p-value corretto
+  significant_genes <- which(pval_corrected < 0.05)  # Filtra per p-value corretto < 0.05
   
   # Calcola la correlazione assoluta solo per i geni significativi
   median_cor <- median(abs(cor_before[significant_genes]))
