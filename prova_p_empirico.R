@@ -9,9 +9,10 @@
 # ##   la mediana della distanza, come nella 10f) con Z almeno altrettanto    ##
 # ##   estremo NELLA STESSA DIREZIONE del barcode (Z >= Z_obs se Z_obs > 0,  ##
 # ##   Z <= Z_obs se Z_obs < 0). (k + 1) / (n + 1), poi BH sui geni.          ##
-# ##   Ranking: fdr empirico, poi p empirico, poi z_std = (Z_obs - media dei  ##
-# ##   centri lontani) / sd dei centri lontani, in valore assoluto.          ##
-# ##   GLM_linear_emp_abs: versione precedente (|Z|, spareggio log p).        ##
+# ##   Ranking: fdr empirico, poi p empirico, poi log p del GLM (sezione 7).  ##
+# ##   GLM_linear_emp_abs: stessa cosa con |Z| (versione precedente).         ##
+# ##   Expression_control: geni ordinati per espressione media, per vedere   ##
+# ##   quanto del Golden Standard si spiega con la sola espressione.         ##
 # ##                                                                          ##
 # ##   Confronto fra GLM_linear (p parametrico), GLM_linear_emp (p empirico), ##
 # ##   SPATA2 e SpatialDE_orig: geni significativi, Golden Standard, GSEA     ##
@@ -60,20 +61,16 @@ p_k    <- function(k) ifelse(is.na(z_obs) | n_null == 0, NA_real_, (k + 1) / (n_
 k_sgn  <- ifelse(z_obs >= 0, rowSums(Zl >= z_obs, na.rm = TRUE), rowSums(Zl <= z_obs, na.rm = TRUE))
 # versione precedente, in valore assoluto
 k_abs  <- rowSums(abs(Zl) >= abs(z_obs), na.rm = TRUE)
-# z standardizzato sui centri lontani dello stesso gene
-mu_l   <- rowMeans(Zl, na.rm = TRUE)
-sd_l   <- sqrt(rowSums((Zl - mu_l)^2, na.rm = TRUE) / pmax(n_null - 1, 1))
-z_std  <- (z_obs - mu_l) / sd_l
 rm(Zl); invisible(gc())
 
 emp <- data.frame(gene_id = rownames(Z1_scan), z_barcode = z_obs, n_centri_null = n_null,
                   k_sgn = k_sgn, p_emp = p_k(k_sgn), k_abs = k_abs, p_emp_abs = p_k(k_abs),
-                  media_lontani = mu_l, sd_lontani = sd_l, z_std = z_std, stringsAsFactors = FALSE)
+                  stringsAsFactors = FALSE)
 emp$fdr_emp     <- p.adjust(emp$p_emp, "BH")
 emp$fdr_emp_abs <- p.adjust(emp$p_emp_abs, "BH")
 emp <- emp %>% left_join(glm_lin %>% select(gene_id, p_value, fdr, log_p), by = "gene_id")
 rk <- function(...) { r <- order(order(...)); r }
-emp$rank     <- rk(emp$fdr_emp, emp$p_emp, -abs(emp$z_std))
+emp$rank     <- rk(emp$fdr_emp, emp$p_emp, emp$log_p)
 emp$rank_abs <- rk(emp$fdr_emp_abs, emp$p_emp_abs, emp$log_p)
 emp$rank[is.na(emp$fdr_emp)]         <- NA_integer_
 emp$rank_abs[is.na(emp$fdr_emp_abs)] <- NA_integer_
@@ -86,8 +83,6 @@ cat("Geni con p empirico:", sum(!is.na(emp$p_emp)), "| al minimo: con segno", su
 cat("GLM_linear significativi: parametrico", sum(emp$fdr < ALPHA_FDR, na.rm = TRUE),
     "| empirico con segno", sum(emp$fdr_emp < ALPHA_FDR, na.rm = TRUE),
     "| empirico |Z|", sum(emp$fdr_emp_abs < ALPHA_FDR, na.rm = TRUE), "\n")
-cat("Spearman fra z_std e log p del GLM (quanto lo spareggio nuovo segue ancora la potenza):",
-    round(cor(abs(emp$z_std), -emp$log_p, method = "spearman", use = "complete.obs"), 3), "\n")
 
 gs_ids <- unique(all_results$gene_id[all_results$is_GS %in% TRUE])
 prova <- bind_rows(
@@ -96,7 +91,9 @@ prova <- bind_rows(
     select(Method, gene_id, fdr, rank, tested),
   emp %>% transmute(Method = "GLM_linear_emp", gene_id, fdr = fdr_emp, rank, tested = !is.na(fdr_emp)),
   emp %>% transmute(Method = "GLM_linear_emp_abs", gene_id, fdr = fdr_emp_abs, rank = rank_abs,
-                    tested = !is.na(fdr_emp_abs))) %>%
+                    tested = !is.na(fdr_emp_abs)),
+  data.frame(Method = "Expression_control", gene_id = emp$gene_id, fdr = NA_real_,
+             rank = order(order(-rowMeans(logcounts_raw)[emp$gene_id])), tested = TRUE)) %>%
   mutate(tested = dplyr::coalesce(tested, TRUE), is_GS = gene_id %in% gs_ids,
          sig = !is.na(fdr) & fdr < ALPHA_FDR)
 
@@ -254,8 +251,7 @@ write_csv(data.frame(dataset = SAMPLE_ID, centri_lontani = length(lontani),
                      n_sig_emp = sum(emp$fdr_emp < ALPHA_FDR, na.rm = TRUE),
                      n_sig_emp_abs = sum(emp$fdr_emp_abs < ALPHA_FDR, na.rm = TRUE),
                      al_minimo_emp = sum(emp$k_sgn == 0, na.rm = TRUE),
-                     al_minimo_emp_abs = sum(emp$k_abs == 0, na.rm = TRUE),
-                     spearman_zstd_logp = round(cor(abs(emp$z_std), -emp$log_p, method = "spearman", use = "complete.obs"), 3)),
+                     al_minimo_emp_abs = sum(emp$k_abs == 0, na.rm = TRUE)),
           file.path(OUTPUT_DIR, "prova_p_empirico_tab_riassunto.csv"))
 
 if (length(.prova_args) >= 2 && file.exists(.prova_args[2])) source(.prova_args[2])
