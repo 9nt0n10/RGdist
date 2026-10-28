@@ -6,9 +6,12 @@
 # ##   lineare di ogni gene con ogni spot come centro, sezione 9c).           ##
 # ##                                                                          ##
 # ##   P empirico di un gene: frazione dei centri LONTANI dal barcode (oltre  ##
-# ##   la mediana della distanza, come nella 10f) con |Z| almeno pari a       ##
-# ##   quello del barcode. (k + 1) / (n + 1), poi BH sui geni.                ##
-# ##   Ranking: fdr empirico, poi p empirico, poi log p del GLM (sezione 7).  ##
+# ##   la mediana della distanza, come nella 10f) con Z almeno altrettanto    ##
+# ##   estremo NELLA STESSA DIREZIONE del barcode (Z >= Z_obs se Z_obs > 0,  ##
+# ##   Z <= Z_obs se Z_obs < 0). (k + 1) / (n + 1), poi BH sui geni.          ##
+# ##   Ranking: fdr empirico, poi p empirico, poi z_std = (Z_obs - media dei  ##
+# ##   centri lontani) / sd dei centri lontani, in valore assoluto.          ##
+# ##   GLM_linear_emp_abs: versione precedente (|Z|, spareggio log p).        ##
 # ##                                                                          ##
 # ##   Confronto fra GLM_linear (p parametrico), GLM_linear_emp (p empirico), ##
 # ##   SPATA2 e SpatialDE_orig: geni significativi, Golden Standard, GSEA     ##
@@ -25,7 +28,7 @@ CHECKPOINT_PATH <- "/home/ammendola/laboratorio/spatial/topo/code/benchmark_v7/h
 load(CHECKPOINT_PATH)
 if (exists("set_blas_threads") && exists("N_CORES")) set_blas_threads(N_CORES)
 
-METODI_PROVA <- c("GLM_linear", "GLM_linear_emp", "SPATA2", "SpatialDE_orig")
+METODI_PROVA <- c("GLM_linear", "GLM_linear_emp", "GLM_linear_emp_abs", "SPATA2", "SpatialDE_orig")
 PROVA_SEED   <- 20261028
 stopifnot(exists("Z1_scan"), exists("glm_lin"), exists("all_results"))
 
@@ -33,33 +36,52 @@ stopifnot(exists("Z1_scan"), exists("glm_lin"), exists("all_results"))
 d_bc    <- sqrt((spots$pixel_col - spots$pixel_col[center_idx])^2 +
                 (spots$pixel_row - spots$pixel_row[center_idx])^2)
 lontani <- which(d_bc > median(d_bc))
-obs     <- abs(Z1_scan[, center_idx])
-Znull   <- abs(Z1_scan[, lontani, drop = FALSE])
-n_null  <- rowSums(!is.na(Znull))
-k_null  <- rowSums(Znull >= obs, na.rm = TRUE)
-p_emp   <- ifelse(is.na(obs) | n_null == 0, NA_real_, (k_null + 1) / (n_null + 1))
-rm(Znull); invisible(gc())
+z_obs  <- Z1_scan[, center_idx]
+Zl     <- Z1_scan[, lontani, drop = FALSE]
+n_null <- rowSums(!is.na(Zl))
+p_k    <- function(k) ifelse(is.na(z_obs) | n_null == 0, NA_real_, (k + 1) / (n_null + 1))
 
-emp <- data.frame(gene_id = rownames(Z1_scan), z_barcode = Z1_scan[, center_idx],
-                  n_centri_null = n_null, k_ge = k_null, p_emp = p_emp, stringsAsFactors = FALSE)
-emp$fdr_emp <- p.adjust(emp$p_emp, "BH")
+# con segno: solo i centri che danno lo stesso verso del barcode contano
+k_sgn  <- ifelse(z_obs >= 0, rowSums(Zl >= z_obs, na.rm = TRUE), rowSums(Zl <= z_obs, na.rm = TRUE))
+# versione precedente, in valore assoluto
+k_abs  <- rowSums(abs(Zl) >= abs(z_obs), na.rm = TRUE)
+# z standardizzato sui centri lontani dello stesso gene
+mu_l   <- rowMeans(Zl, na.rm = TRUE)
+sd_l   <- sqrt(rowSums((Zl - mu_l)^2, na.rm = TRUE) / pmax(n_null - 1, 1))
+z_std  <- (z_obs - mu_l) / sd_l
+rm(Zl); invisible(gc())
+
+emp <- data.frame(gene_id = rownames(Z1_scan), z_barcode = z_obs, n_centri_null = n_null,
+                  k_sgn = k_sgn, p_emp = p_k(k_sgn), k_abs = k_abs, p_emp_abs = p_k(k_abs),
+                  media_lontani = mu_l, sd_lontani = sd_l, z_std = z_std, stringsAsFactors = FALSE)
+emp$fdr_emp     <- p.adjust(emp$p_emp, "BH")
+emp$fdr_emp_abs <- p.adjust(emp$p_emp_abs, "BH")
 emp <- emp %>% left_join(glm_lin %>% select(gene_id, p_value, fdr, log_p), by = "gene_id")
-emp$rank <- order(order(emp$fdr_emp, emp$p_emp, emp$log_p))
-emp$rank[is.na(emp$fdr_emp)] <- NA_integer_
+rk <- function(...) { r <- order(order(...)); r }
+emp$rank     <- rk(emp$fdr_emp, emp$p_emp, -abs(emp$z_std))
+emp$rank_abs <- rk(emp$fdr_emp_abs, emp$p_emp_abs, emp$log_p)
+emp$rank[is.na(emp$fdr_emp)]         <- NA_integer_
+emp$rank_abs[is.na(emp$fdr_emp_abs)] <- NA_integer_
 write_csv(emp, file.path(OUTPUT_DIR, "prova_p_empirico_glm_linear.csv"))
 
 cat("Centri lontani usati:", length(lontani), "| p empirico minimo possibile:",
     signif(1 / (median(n_null) + 1), 3), "\n")
-cat("Geni con p empirico:", sum(!is.na(emp$p_emp)), "| al minimo:", sum(emp$k_ge == 0, na.rm = TRUE), "\n")
+cat("Geni con p empirico:", sum(!is.na(emp$p_emp)), "| al minimo: con segno", sum(emp$k_sgn == 0, na.rm = TRUE),
+    "| in valore assoluto", sum(emp$k_abs == 0, na.rm = TRUE), "\n")
 cat("GLM_linear significativi: parametrico", sum(emp$fdr < ALPHA_FDR, na.rm = TRUE),
-    "| empirico", sum(emp$fdr_emp < ALPHA_FDR, na.rm = TRUE), "\n")
+    "| empirico con segno", sum(emp$fdr_emp < ALPHA_FDR, na.rm = TRUE),
+    "| empirico |Z|", sum(emp$fdr_emp_abs < ALPHA_FDR, na.rm = TRUE), "\n")
+cat("Spearman fra z_std e log p del GLM (quanto lo spareggio nuovo segue ancora la potenza):",
+    round(cor(abs(emp$z_std), -emp$log_p, method = "spearman", use = "complete.obs"), 3), "\n")
 
 gs_ids <- unique(all_results$gene_id[all_results$is_GS %in% TRUE])
 prova <- bind_rows(
   all_results %>% filter(Method %in% setdiff(METODI_PROVA, "GLM_linear_emp")) %>%
     mutate(Method = as.character(Method)) %>%
     select(Method, gene_id, fdr, rank, tested),
-  emp %>% transmute(Method = "GLM_linear_emp", gene_id, fdr = fdr_emp, rank, tested = !is.na(fdr_emp))) %>%
+  emp %>% transmute(Method = "GLM_linear_emp", gene_id, fdr = fdr_emp, rank, tested = !is.na(fdr_emp)),
+  emp %>% transmute(Method = "GLM_linear_emp_abs", gene_id, fdr = fdr_emp_abs, rank = rank_abs,
+                    tested = !is.na(fdr_emp_abs))) %>%
   mutate(tested = dplyr::coalesce(tested, TRUE), is_GS = gene_id %in% gs_ids,
          sig = !is.na(fdr) & fdr < ALPHA_FDR)
 

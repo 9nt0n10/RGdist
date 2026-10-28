@@ -16,8 +16,8 @@ if (!exists("prova") || !exists("gsea_prova"))
   stop("Lancia prima prova_p_empirico.R nella stessa sessione.")
 suppressPackageStartupMessages({ library(dplyr); library(tidyr); library(ggplot2) })
 
-LIV  <- c("GLM_linear", "GLM_linear_emp", "SPATA2", "SpatialDE_orig", "Expression_control")
-COL  <- c(GLM_linear = "#7570b3", GLM_linear_emp = "#1b9e77", SPATA2 = "#d95f02",
+LIV  <- c("GLM_linear", "GLM_linear_emp", "GLM_linear_emp_abs", "SPATA2", "SpatialDE_orig", "Expression_control")
+COL  <- c(GLM_linear = "#7570b3", GLM_linear_emp = "#1b9e77", GLM_linear_emp_abs = "#66a61e", SPATA2 = "#d95f02",
           SpatialDE_orig = "#e7298a", Expression_control = "grey50")
 B    <- 1000
 SEED <- 20261028
