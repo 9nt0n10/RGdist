@@ -33,7 +33,14 @@ suppressPackageStartupMessages({
 load(.prova_ck)
 CHECKPOINT_PATH <- .prova_ck
 cat("\n========== PROVA P EMPIRICO:", SAMPLE_ID, "==========\n")
-if (exists("set_blas_threads") && exists("N_CORES")) try(set_blas_threads(N_CORES), silent = TRUE)
+# Processori per questo run: PROVA_THREADS (lo imposta prova_p_empirico_tutti.R),
+# altrimenti N_CORES del checkpoint. BLAS a 1 thread: i conti pesanti qui sono
+# confronti fra matrici e GSEA, che si parallelizzano per metodo (sezione 5).
+PROVA_THREADS <- suppressWarnings(as.integer(Sys.getenv("PROVA_THREADS", "")))
+if (is.na(PROVA_THREADS) || PROVA_THREADS < 1) PROVA_THREADS <- if (exists("N_CORES")) N_CORES else 4L
+if (requireNamespace("RhpcBLASctl", quietly = TRUE)) RhpcBLASctl::blas_set_num_threads(1)
+BiocParallel::register(BiocParallel::SerialParam())     # fgsea seriale dentro ogni processo
+cat("Processori per questo run:", PROVA_THREADS, "\n")
 
 METODI_PROVA <- c("GLM_linear", "GLM_linear_emp", "GLM_linear_emp_abs",
                   intersect(c("SPATA2", "SpatialDE_orig"), unique(as.character(all_results$Method))))
@@ -209,7 +216,8 @@ SC <- lapply(setNames(METODI_PROVA, METODI_PROVA), function(m) {
 })
 SC$Expression_control <- pos_score(U_enr[order(-expr_U)])
 
-gsea_prova <- bind_rows(lapply(names(SC), function(m) {
+# una GSEA per processo figlio, fino a PROVA_THREADS insieme
+gsea_prova <- bind_rows(parallel::mclapply(names(SC), mc.cores = min(PROVA_THREADS, length(SC)), function(m) {
   cat("  GSEA:", m, "(", length(SC[[m]]), "geni )\n")
   set.seed(PROVA_SEED)
   g <- as.data.frame(suppressWarnings(GSEA(SC[[m]], TERM2GENE = T2_pw, minGSSize = 10, maxGSSize = 500,
@@ -218,6 +226,7 @@ gsea_prova <- bind_rows(lapply(names(SC), function(m) {
   data.frame(Method = m, pathway = g$ID, NES = g$NES, p_adjust = g$p.adjust,
              is_context = g$ID %in% TARGET_PATHWAYS, stringsAsFactors = FALSE)
 }))
+stopifnot(all(names(SC) %in% gsea_prova$Method))     # un figlio fallito non deve passare inosservato
 write_csv(gsea_prova, file.path(OUTPUT_DIR, "prova_p_empirico_gsea.csv"))
 
 auc_ctx <- function(nes, ctx) {

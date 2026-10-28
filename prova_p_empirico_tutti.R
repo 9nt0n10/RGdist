@@ -12,6 +12,8 @@ suppressPackageStartupMessages({ library(readr); library(dplyr); library(tidyr);
 SCRIPT_DIR  <- "/home/ammendola/laboratorio/spatial/RGdist"     # cartella con gli script prova_p_empirico*.R
 CONFRONTO_DIR <- "/home/ammendola/laboratorio/spatial/prova_p_empirico_confronto"
 RIFAI       <- TRUE      # FALSE = non rilancia, legge solo le tabelle gia' scritte
+N_CPU       <- 40        # processori in tutto
+MAX_JOBS    <- 6         # dataset in parallelo: abbassalo se la RAM non basta (ogni run carica un checkpoint)
 
 CHECKPOINTS <- c(
   "/home/ammendola/laboratorio/spatial/topo/code/benchmark_v7/heme_1000/checkpoint_pre_grafici.RData",
@@ -28,18 +30,33 @@ stopifnot(file.exists(core), file.exists(grafici))
 dir.create(CONFRONTO_DIR, recursive = TRUE, showWarnings = FALSE)
 rscript <- file.path(R.home("bin"), "Rscript")       # stesso R di questa sessione
 
-# --- 1. Un processo per dataset ------------------------------------------------------
-if (RIFAI) for (ck in CHECKPOINTS) {
-  if (!file.exists(ck)) { cat("\nMANCA:", ck, "\n"); next }
-  cat("\n#################", basename(dirname(ck)), "#################\n")
+# --- 1. Un processo per dataset, fino a MAX_JOBS insieme -------------------------------
+presenti <- CHECKPOINTS[file.exists(CHECKPOINTS)]
+for (ck in setdiff(CHECKPOINTS, presenti)) cat("MANCA:", ck, "\n")
+n_jobs  <- max(1L, min(MAX_JOBS, length(presenti)))
+threads <- max(1L, floor(N_CPU / n_jobs))
+cat("Dataset:", length(presenti), "| in parallelo:", n_jobs, "| processori per dataset:", threads, "\n")
+
+lancia <- function(ck) {
   t0  <- Sys.time()
+  env <- c(paste0("PROVA_THREADS=", threads), "OMP_NUM_THREADS=1", "OPENBLAS_NUM_THREADS=1", "MKL_NUM_THREADS=1")
   out <- suppressWarnings(system2(rscript, c(shQuote(core), shQuote(ck), shQuote(grafici)),
-                                  stdout = TRUE, stderr = TRUE))
+                                  stdout = TRUE, stderr = TRUE, env = env))
   writeLines(out, file.path(dirname(ck), "prova_p_empirico_log.txt"))
-  cat(out, sep = "\n")
   st <- attr(out, "status")
-  cat("--> ", basename(dirname(ck)), ": ", if (is.null(st) || st == 0) "OK" else paste("ERRORE, codice", st),
-      " in ", round(as.numeric(difftime(Sys.time(), t0, units = "mins")), 1), " min\n", sep = "")
+  list(ck = ck, ok = is.null(st) || st == 0, out = out,
+       min = round(as.numeric(difftime(Sys.time(), t0, units = "mins")), 1))
+}
+if (RIFAI && length(presenti) > 0) {
+  t_tot <- Sys.time()
+  esiti <- parallel::mclapply(presenti, lancia, mc.cores = n_jobs, mc.preschedule = FALSE)
+  for (e in esiti) {
+    if (inherits(e, "try-error")) { cat("\nERRORE nel processo:", as.character(e), "\n"); next }
+    cat("\n#################", basename(dirname(e$ck)), "#################\n")
+    cat(e$out, sep = "\n")
+    cat("--> ", basename(dirname(e$ck)), ": ", if (e$ok) "OK" else "ERRORE (vedi sopra)", " in ", e$min, " min\n", sep = "")
+  }
+  cat("\nTempo totale:", round(as.numeric(difftime(Sys.time(), t_tot, units = "mins")), 1), "min\n")
 }
 
 # --- 2. Tabelle di tutti i dataset ----------------------------------------------------
