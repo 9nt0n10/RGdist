@@ -178,3 +178,34 @@ for (ds in DATASETS) {
   } else cat("Nessuna colonna p-value riconosciuta fra le colonne sopra.\n")
   if ("fdr" %in% names(sp)) cat("fdr NA:", sum(is.na(sp$fdr)), "| fdr < ", ALPHA, ":", sum(sp$fdr < ALPHA, na.rm = TRUE), "\n")
 }
+
+# --- D3. Geni significativi per SPATA2 che non entrano nel confronto -------------------
+# spata2_results.csv e' l'output completo di SPATA2; la pipeline tiene solo i geni del
+# proprio universo (sezione 11b.4). Qui si vede cosa resta fuori fra i significativi.
+for (ds in DATASETS) {
+  f <- file.path(BASE_RESULTS, ds, "spata2", "spata2_results.csv")
+  if (!file.exists(f)) next
+  sp  <- suppressMessages(read_csv(f, show_col_types = FALSE))
+  uni <- unique(long$gene_id[long$dataset == ds & long$Method != "SPATA2"])
+  sp$sig <- !is.na(sp$fdr) & sp$fdr < ALPHA
+  sp$in_universe <- !is.na(sp$gene_id) & sp$gene_id %in% uni
+  sp$categoria <- ifelse(sp$in_universe, "nell'universo della pipeline",
+                  ifelse(is.na(sp$gene_id), "non mappato a Ensembl",
+                  ifelse(grepl("^mt-", sp$gene, ignore.case = TRUE), "mitocondriale",
+                         "fuori universo (poco espresso o non annotato)")))
+  cat("\n>>> D3. SPATA2, geni significativi dentro e fuori l'universo,", ds, "<<<\n")
+  cat("Geni nell'output di SPATA2:", nrow(sp), "| universo della pipeline:", length(uni),
+      "| significativi sul suo output:", sum(sp$sig),
+      sprintf("(%.1f%%)", 100 * mean(sp$sig)), "\n")
+  cat("Geni dell'universo assenti dall'output di SPATA2:", length(setdiff(uni, sp$gene_id)),
+      "| gene_id duplicati nell'output:", sum(duplicated(sp$gene_id[!is.na(sp$gene_id)])), "\n")
+  print(as.data.frame(sp %>% group_by(categoria) %>%
+                        summarise(n_geni = n(), n_significativi = sum(sig),
+                                  pct_significativi = round(100 * mean(sig), 1), .groups = "drop")),
+        row.names = FALSE)
+  fuori <- sp %>% filter(sig, !in_universe) %>% arrange(desc(tot_var)) %>%
+    select(gene, gene_id, tot_var, p_value, fdr, categoria)
+  write_csv(fuori, file.path(BASE_RESULTS, ds, "spata2", "spata2_sig_fuori_universo.csv"))
+  cat("\nPrimi 25 significativi fuori dall'universo (per tot_var); elenco completo in spata2/spata2_sig_fuori_universo.csv:\n")
+  print(as.data.frame(head(fuori, 25)), row.names = FALSE, digits = 3)
+}
