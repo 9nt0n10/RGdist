@@ -131,3 +131,50 @@ if (!is.null(diag_calib) && nrow(diag_calib) > 0) {
   cat("\n>>> C3. Calibrazione sotto ipotesi nulla (10e): frac_p05_null vicino a 0.05 = calibrato <<<\n")
   print(as.data.frame(diag_calib), row.names = FALSE, digits = 3)
 }
+
+# --- D. SPATA2 contro gli altri metodi -----------------------------------------------
+# sig_in_comune: geni significativi (fdr < ALPHA) sia per SPATA2 sia per l'altro metodo.
+# overlap_top_N: i primi N geni dell'altro metodo (N = n. significativi di SPATA2) che
+#   sono anche significativi per SPATA2: confronto alla pari, senza soglia dell'altro.
+# spearman_rank: correlazione fra i rank dei due metodi sui geni testati da entrambi.
+REF_M <- "SPATA2"
+diag_spata <- bind_rows(lapply(DATASETS, function(ds) {
+  d   <- long %>% filter(dataset == ds, tested, !is.na(rank))
+  ref <- d %>% filter(Method == REF_M)
+  if (nrow(ref) == 0) return(NULL)
+  sig_ref <- ref$gene_id[!is.na(ref$fdr) & ref$fdr < ALPHA]
+  n_top   <- length(sig_ref)
+  bind_rows(lapply(setdiff(unique(d$Method), REF_M), function(m) {
+    o      <- d %>% filter(Method == m)
+    comuni <- intersect(o$gene_id, ref$gene_id)
+    if (length(comuni) < 100) return(NULL)
+    sig_o  <- o$gene_id[!is.na(o$fdr) & o$fdr < ALPHA]
+    top_o  <- o$gene_id[order(o$rank)][seq_len(min(n_top, nrow(o)))]
+    inter  <- length(intersect(sig_ref, sig_o))
+    data.frame(dataset = ds, Method = m, n_sig_SPATA2 = n_top, n_sig_metodo = length(sig_o),
+               sig_in_comune = inter,
+               pct_SPATA2_anche_nel_metodo = round(100 * inter / max(n_top, 1), 1),
+               jaccard_sig = round(inter / max(length(union(sig_ref, sig_o)), 1), 3),
+               overlap_top_N = round(100 * length(intersect(sig_ref, top_o)) / max(n_top, 1), 1),
+               spearman_rank = round(cor(ref$rank[match(comuni, ref$gene_id)],
+                                         o$rank[match(comuni, o$gene_id)], method = "spearman"), 3),
+               stringsAsFactors = FALSE)
+  }))
+}))
+cat("\n>>> D1. SPATA2 contro gli altri metodi: sovrapposizione dei significativi e dei rank <<<\n")
+print(as.data.frame(diag_spata %>% arrange(dataset, desc(spearman_rank))), row.names = FALSE)
+
+# --- D2. Risoluzione dei p-value di SPATA2 -------------------------------------------
+for (ds in DATASETS) {
+  f <- file.path(BASE_RESULTS, ds, "spata2", "spata2_results.csv")
+  if (!file.exists(f)) next
+  sp <- suppressMessages(read_csv(f, show_col_types = FALSE))
+  cat("\n>>> D2. SPATA2 p-value,", ds, "<<<\nColonne:", paste(names(sp), collapse = ", "), "\n")
+  pc <- intersect(c("pval", "p_value", "pvalue", "p.value", "p"), names(sp))[1]
+  if (!is.na(pc)) {
+    v <- sp[[pc]]
+    cat("p minimo:", signif(min(v, na.rm = TRUE), 3), "| geni al minimo:", sum(v == min(v, na.rm = TRUE), na.rm = TRUE),
+        "| p NA:", sum(is.na(v)), "| p <= 1e-3:", sum(v <= 1e-3, na.rm = TRUE), "\n")
+  } else cat("Nessuna colonna p-value riconosciuta fra le colonne sopra.\n")
+  if ("fdr" %in% names(sp)) cat("fdr NA:", sum(is.na(sp$fdr)), "| fdr < ", ALPHA, ":", sum(sp$fdr < ALPHA, na.rm = TRUE), "\n")
+}
