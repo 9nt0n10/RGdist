@@ -44,9 +44,10 @@ diag_gene <- long %>% filter(tested) %>%
             n_GS       = sum(is_GS %in% TRUE),
             GS_in_sig  = sum(is_GS %in% TRUE & !is.na(fdr) & fdr < ALPHA),
             .groups = "drop") %>%
-  mutate(GS_base_rate = round(100 * n_GS / n_tested, 1),
-         GS_pct_in_sig = round(100 * GS_in_sig / pmax(n_sig, 1), 1),
-         GS_fold = round(GS_pct_in_sig / GS_base_rate, 2))
+  mutate(GS_base_rate = round(100 * n_GS / n_tested, 2),
+         GS_pct_in_sig = round(100 * GS_in_sig / pmax(n_sig, 1), 2),
+         GS_fold   = round((GS_in_sig / pmax(n_sig, 1)) / (n_GS / n_tested), 2),
+         GS_recall = round(100 * GS_in_sig / pmax(n_GS, 1), 1))
 
 cat("\n>>> A1. % di geni testati con FDR <", ALPHA, "(righe = metodi, colonne = dataset) <<<\n")
 print(as.data.frame(diag_gene %>% select(Method, dataset, pct_sig) %>%
@@ -57,9 +58,12 @@ print(as.data.frame(diag_gene %>% select(Method, dataset, n_sig) %>%
 cat("\n>>> A3. Geni testati <<<\n")
 print(as.data.frame(diag_gene %>% select(Method, dataset, n_tested) %>%
                       pivot_wider(names_from = dataset, values_from = n_tested)), row.names = FALSE)
-cat("\n>>> A4. Golden Standard fra i significativi: % e fold rispetto al caso (1 = come a caso) <<<\n")
+cat("\n>>> A4. Golden Standard fra i significativi: fold rispetto al caso (1 = come a caso) <<<\n")
 print(as.data.frame(diag_gene %>% select(Method, dataset, GS_fold) %>%
                       pivot_wider(names_from = dataset, values_from = GS_fold)), row.names = FALSE)
+cat("\n>>> A5. Golden Standard recuperato (% dei geni GS con FDR <", ALPHA, ") <<<\n")
+print(as.data.frame(diag_gene %>% select(Method, dataset, GS_recall) %>%
+                      pivot_wider(names_from = dataset, values_from = GS_recall)), row.names = FALSE)
 
 p_sig <- ggplot(diag_gene, aes(x = pct_sig, y = reorder(Method, pct_sig), colour = dataset)) +
   geom_point(size = 2) + theme_minimal(base_size = 9) +
