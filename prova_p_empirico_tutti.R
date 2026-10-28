@@ -88,7 +88,7 @@ lunga <- bind_rows(
   filter(is.finite(Valore)) %>%
   mutate(Method = factor(Method, levels = rev(intersect(LIV, unique(Method)))))
 p <- ggplot(lunga, aes(x = Valore, y = Method, colour = dataset)) +
-  geom_point(size = 2, alpha = 0.85, position = position_dodge(width = 0.5)) +
+  geom_point(size = 2, alpha = 0.85, position = position_jitter(height = 0.15, width = 0, seed = 1)) +
   facet_wrap(~ Misura, scales = "free_x", ncol = 3) +
   theme_minimal(base_size = 9) + theme(legend.position = "bottom") +
   labs(title = "Prova p empirico: tutti i dataset", x = NULL, y = NULL, colour = NULL)
