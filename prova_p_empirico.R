@@ -24,11 +24,19 @@ suppressPackageStartupMessages({
   library(edgeR); library(msigdbr); library(clusterProfiler)
 })
 
-CHECKPOINT_PATH <- "/home/ammendola/laboratorio/spatial/topo/code/benchmark_v7/heme_1000/checkpoint_pre_grafici.RData"
-load(CHECKPOINT_PATH)
-if (exists("set_blas_threads") && exists("N_CORES")) set_blas_threads(N_CORES)
+# Checkpoint: primo argomento da riga di comando (lo usa prova_p_empirico_tutti.R),
+# altrimenti CHECKPOINT_PATH gia' definito nella sessione, altrimenti heme_1000.
+# Secondo argomento opzionale: lo script dei grafici, lanciato alla fine.
+.prova_args <- commandArgs(trailingOnly = TRUE)
+.prova_ck <- if (length(.prova_args) >= 1) .prova_args[1] else if (exists("CHECKPOINT_PATH")) CHECKPOINT_PATH else
+  "/home/ammendola/laboratorio/spatial/topo/code/benchmark_v7/heme_1000/checkpoint_pre_grafici.RData"
+load(.prova_ck)
+CHECKPOINT_PATH <- .prova_ck
+cat("\n========== PROVA P EMPIRICO:", SAMPLE_ID, "==========\n")
+if (exists("set_blas_threads") && exists("N_CORES")) try(set_blas_threads(N_CORES), silent = TRUE)
 
-METODI_PROVA <- c("GLM_linear", "GLM_linear_emp", "GLM_linear_emp_abs", "SPATA2", "SpatialDE_orig")
+METODI_PROVA <- c("GLM_linear", "GLM_linear_emp", "GLM_linear_emp_abs",
+                  intersect(c("SPATA2", "SpatialDE_orig"), unique(as.character(all_results$Method))))
 PROVA_SEED   <- 20261028
 stopifnot(exists("Z1_scan"), exists("glm_lin"), exists("all_results"))
 
@@ -100,6 +108,8 @@ cat("\n>>> Geni significativi e Golden Standard <<<\n")
 print(as.data.frame(tab_geni), row.names = FALSE)
 
 # --- 3. Sovrapposizione con SPATA2 ---------------------------------------------------
+tab_sp <- data.frame()
+if ("SPATA2" %in% METODI_PROVA) {
 sp_ref <- prova %>% filter(Method == "SPATA2", tested)
 sig_sp <- sp_ref$gene_id[sp_ref$sig]
 tab_sp <- bind_rows(lapply(setdiff(METODI_PROVA, "SPATA2"), function(m) {
@@ -112,8 +122,9 @@ tab_sp <- bind_rows(lapply(setdiff(METODI_PROVA, "SPATA2"), function(m) {
 }))
 cat("\n>>> Sovrapposizione con SPATA2 <<<\n")
 print(tab_sp, row.names = FALSE)
+}
 cat("Correlazione di Spearman fra il rank parametrico e quello empirico di GLM_linear:",
-    round(cor(emp$rank, rank_by_fdr_then_stat(emp$fdr, emp$log_p), method = "spearman", use = "complete.obs"), 3), "\n")
+    round(cor(emp$rank, order(order(emp$fdr, emp$log_p)), method = "spearman", use = "complete.obs"), 3), "\n")
 
 # --- 4. Pathway (stessa costruzione della sezione 15) ----------------------------------
  
@@ -224,3 +235,18 @@ tab_gsea <- gsea_prova %>% left_join(nes_expr, by = "pathway") %>% group_by(Meth
             n_p05_ctx = sum(p_adjust < ALPHA_FDR & is_context, na.rm = TRUE), .groups = "drop")
 cat("\n>>> GSEA (n_p05 solo diagnostica) <<<\n")
 print(as.data.frame(tab_gsea), row.names = FALSE)
+
+# --- 6. Tabelle su disco (le legge prova_p_empirico_tutti.R) ---------------------------
+write_csv(tab_geni %>% mutate(dataset = SAMPLE_ID), file.path(OUTPUT_DIR, "prova_p_empirico_tab_geni.csv"))
+write_csv(tab_gsea %>% mutate(dataset = SAMPLE_ID), file.path(OUTPUT_DIR, "prova_p_empirico_tab_gsea.csv"))
+if (nrow(tab_sp) > 0) write_csv(tab_sp %>% mutate(dataset = SAMPLE_ID), file.path(OUTPUT_DIR, "prova_p_empirico_tab_spata2.csv"))
+write_csv(data.frame(dataset = SAMPLE_ID, centri_lontani = length(lontani),
+                     n_sig_param = sum(emp$fdr < ALPHA_FDR, na.rm = TRUE),
+                     n_sig_emp = sum(emp$fdr_emp < ALPHA_FDR, na.rm = TRUE),
+                     n_sig_emp_abs = sum(emp$fdr_emp_abs < ALPHA_FDR, na.rm = TRUE),
+                     al_minimo_emp = sum(emp$k_sgn == 0, na.rm = TRUE),
+                     al_minimo_emp_abs = sum(emp$k_abs == 0, na.rm = TRUE),
+                     spearman_zstd_logp = round(cor(abs(emp$z_std), -emp$log_p, method = "spearman", use = "complete.obs"), 3)),
+          file.path(OUTPUT_DIR, "prova_p_empirico_tab_riassunto.csv"))
+
+if (length(.prova_args) >= 2 && file.exists(.prova_args[2])) source(.prova_args[2])

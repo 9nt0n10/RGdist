@@ -24,9 +24,12 @@ SEED <- 20261028
 salva <- function(p, nome, w = 8, h = 5) {
   print(p); ggsave(file.path(PLOT_DIR, paste0("prova_emp_", nome, ".png")), p, width = w, height = h, dpi = 150)
 }
+LIV  <- intersect(LIV, unique(c(as.character(prova$Method), gsea_prova$Method)))
 gr <- prova %>% filter(tested, !is.na(rank)) %>% mutate(Method = factor(Method, levels = LIV))
+HAS_GS_PROVA <- sum(gr$is_GS) > 0
 
 # --- 1. Boxplot dei rank del Golden Standard -------------------------------------------
+if (HAS_GS_PROVA) {
 gs <- gr %>% filter(is_GS)
 med <- gs %>% group_by(Method) %>% summarise(m = median(rank), .groups = "drop")
 p1 <- ggplot(gs, aes(x = rank, y = Method, fill = Method)) +
@@ -34,7 +37,7 @@ p1 <- ggplot(gs, aes(x = rank, y = Method, fill = Method)) +
   geom_text(data = med, aes(x = m, y = Method, label = round(m)), vjust = -1.4, size = 3, inherit.aes = FALSE) +
   scale_fill_manual(values = COL, guide = "none") + scale_y_discrete(limits = rev) +
   theme_minimal(base_size = 10) +
-  labs(title = "Rank dei geni del Golden Standard", subtitle = paste0(n_distinct(gs$gene_id), " geni | piu' a sinistra = meglio"),
+  labs(title = paste0(SAMPLE_ID, ": rank dei geni del Golden Standard"), subtitle = paste0(n_distinct(gs$gene_id), " geni | piu' a sinistra = meglio"),
        x = "Rank", y = NULL)
 salva(p1, "01_boxplot_gs")
 
@@ -51,8 +54,9 @@ p2 <- ggplot(roc, aes(x = FPR, y = TPR, colour = Method)) +
   geom_abline(linetype = "dashed", colour = "grey60") + geom_line(linewidth = 0.7) +
   scale_colour_manual(values = COL, labels = lab) + coord_equal() +
   theme_minimal(base_size = 10) +
-  labs(title = "ROC sul Golden Standard", x = "False positive rate", y = "True positive rate", colour = NULL)
+  labs(title = paste0(SAMPLE_ID, ": ROC sul Golden Standard"), x = "False positive rate", y = "True positive rate", colour = NULL)
 salva(p2, "02_roc", w = 7, h = 6)
+} else cat("Nessun gene del Golden Standard: boxplot e ROC saltati\n")
 
 # --- 3. AUC contesto/altri sul NES con IC bootstrap -------------------------------------
 auc_r <- function(r, i, n1, n0) (sum(r[i]) - n1 * (n1 + 1) / 2) / (n1 * n0)
@@ -69,7 +73,7 @@ p3 <- ggplot(ctx, aes(x = auc, y = Method, colour = Method)) +
   geom_errorbar(aes(xmin = lo, xmax = hi), width = 0.25, orientation = "y") + geom_point(size = 2.5) +
   scale_colour_manual(values = COL, guide = "none") + scale_y_discrete(limits = rev) +
   theme_minimal(base_size = 10) +
-  labs(title = "Pathway di contesto contro gli altri, sul NES",
+  labs(title = paste0(SAMPLE_ID, ": pathway di contesto (", ENRICHMENT_CONTEXT, ") contro gli altri, sul NES"),
        subtitle = paste0(sum(gsea_prova$is_context[gsea_prova$Method == LIV[1]]), " pathway di contesto | 0.5 = nessuna preferenza | IC 95% bootstrap"),
        x = "AUC (contesto vs altri)", y = NULL)
 salva(p3, "03_auc_contesto")
@@ -82,7 +86,7 @@ p4 <- gsea_prova %>% mutate(Method = factor(Method, levels = LIV),
   geom_boxplot(outlier.size = 0.4, linewidth = 0.3) +
   scale_fill_manual(values = c(Contesto = "#d95f02", Altri = "grey75")) + scale_y_discrete(limits = rev) +
   theme_minimal(base_size = 10) +
-  labs(title = "NES di tutti i pathway", subtitle = "nessun filtro di significativita'", x = "NES", y = NULL, fill = NULL)
+  labs(title = paste0(SAMPLE_ID, ": NES di tutti i pathway"), subtitle = "nessun filtro di significativita'", x = "NES", y = NULL, fill = NULL)
 salva(p4, "04_nes_boxplot")
 
 # --- 5. NES dei pathway di contesto piu' alti ----------------------------------------------
@@ -98,7 +102,7 @@ p5 <- gsea_prova %>% filter(pathway %in% top_pw) %>%
   geom_point() + geom_point(data = function(d) d[d$sig, ], shape = 1, colour = "black", stroke = 0.6) +
   scale_colour_viridis_c() + theme_minimal(base_size = 8) +
   theme(axis.text.x = element_text(angle = 30, hjust = 1)) +
-  labs(title = "NES dei 30 pathway di contesto piu' alti (media sui metodi)",
+  labs(title = paste0(SAMPLE_ID, ": NES dei 30 pathway di contesto piu' alti (media sui metodi)"),
        subtitle = paste0("cerchio nero = FDR < ", ALPHA_FDR), x = NULL, y = NULL, size = "-log10(FDR)")
 salva(p5, "05_nes_contesto_top", w = 9, h = 8)
 
@@ -114,7 +118,7 @@ p6 <- gsea_prova %>% group_by(Method) %>%
   scale_fill_manual(values = COL, guide = "none") + scale_y_discrete(limits = rev) +
   scale_x_continuous(expand = expansion(mult = c(0, 0.15))) +
   theme_minimal(base_size = 10) +
-  labs(title = paste0("Pathway con FDR < ", ALPHA_FDR, " (solo diagnostica)"), x = "Numero di pathway", y = NULL)
+  labs(title = paste0(SAMPLE_ID, ": pathway con FDR < ", ALPHA_FDR, " (solo diagnostica)"), x = "Numero di pathway", y = NULL)
 salva(p6, "06_pathway_fdr", w = 9, h = 4.5)
 
 cat("Grafici salvati in", PLOT_DIR, "con prefisso prova_emp_\n")
