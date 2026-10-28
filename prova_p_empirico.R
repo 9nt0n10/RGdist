@@ -244,6 +244,8 @@ print(as.data.frame(tab_gsea), row.names = FALSE)
 
 # --- 6. Tabelle su disco (le legge prova_p_empirico_tutti.R) ---------------------------
 write_csv(tab_geni %>% mutate(dataset = SAMPLE_ID), file.path(OUTPUT_DIR, "prova_p_empirico_tab_geni.csv"))
+write_csv(prova %>% select(Method, gene_id, fdr, rank, tested, is_GS, sig) %>% mutate(dataset = SAMPLE_ID),
+          file.path(OUTPUT_DIR, "prova_p_empirico_ranks.csv"))
 write_csv(tab_gsea %>% mutate(dataset = SAMPLE_ID), file.path(OUTPUT_DIR, "prova_p_empirico_tab_gsea.csv"))
 if (nrow(tab_sp) > 0) write_csv(tab_sp %>% mutate(dataset = SAMPLE_ID), file.path(OUTPUT_DIR, "prova_p_empirico_tab_spata2.csv"))
 write_csv(data.frame(dataset = SAMPLE_ID, centri_lontani = length(lontani),

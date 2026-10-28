@@ -112,3 +112,7 @@ p <- ggplot(lunga, aes(x = Valore, y = Method, colour = dataset)) +
 print(p)
 ggsave(file.path(CONFRONTO_DIR, "confronto_dataset.png"), p, width = 12, height = 7, dpi = 150)
 cat("\nTabelle e grafico in", CONFRONTO_DIR, "\n")
+
+# --- 4. Grafici come nella pipeline, tutti i dataset insieme --------------------------------
+f_graf <- file.path(SCRIPT_DIR, "prova_p_empirico_grafici_tutti.R")
+if (file.exists(f_graf)) source(f_graf)
