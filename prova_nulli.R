@@ -15,6 +15,11 @@
 # ##                dei vicini).                                              ##
 # ##   p = (k + 1) / (n + 1) su |Z|, BH sui geni. Ranking: fdr, p, log p del  ##
 # ##   GLM (sezione 7). GLM_linear resta il p parametrico di edgeR.           ##
+# ##     spettrale_sigma: dagli stessi campi si stima, gene per gene, la sd   ##
+# ##                di Z sotto il nullo (sigma) e p = 2 * pnorm(-|Z| / sigma).##
+# ##                Continuo: nessun limite di risoluzione.                   ##
+# ##     spettrale_10k: come spettrale ma con B_VERIFICA campi, solo per i    ##
+# ##                dataset in DATASET_VERIFICA (verifica della risoluzione). ##
 # ##                                                                          ##
 # ##   Controllo (falsi centri): gli stessi test su N_FALSI centri finti. Un  ##
 # ##   test affidabile da' circa il 5% di geni con p < 0.05 e quasi nessun    ##
@@ -49,6 +54,8 @@ BANDA        <- 10       # spettrale: mezza larghezza (in autovettori) per smuss
 B_SPET       <- 1000     # spettrale: campi casuali al centro vero
 N_FALSI      <- 10       # falsi centri
 B_FALSI      <- 200      # spettrale: campi casuali per ogni falso centro
+B_VERIFICA   <- 10000    # spettrale_10k: campi casuali al centro vero
+DATASET_VERIFICA <- c("stab_inj1", "stab_inj2")   # dove fare spettrale_10k (piu' lento)
 NL_SEED      <- 20261029
 # ------------------------------------------------------------------------------------------
 
@@ -85,15 +92,21 @@ analizza <- function(threads) {
   rm(Y, mu, den, dn); invisible(gc())
   stopifnot(identical(rownames(R), geni))
 
+  # p empirico su |Z| e sigma (sd di Z sotto il nullo, attorno a 0) per ogni gene.
+  # X = covariate casuali [spot x campi]; si lavora a blocchi per la memoria.
   p_campi <- function(X, z_ref, blocco = 200) {
-    k <- numeric(length(z_ref)); nv <- numeric(length(z_ref))
+    k <- numeric(length(z_ref)); nv <- numeric(length(z_ref)); q <- numeric(length(z_ref))
     for (s in seq(1, ncol(X), by = blocco)) {
       Xb <- X[, s:min(s + blocco - 1, ncol(X)), drop = FALSE]
       S1 <- W %*% Xb; V <- W %*% (Xb^2) - S1^2 / S0; V[V <= 0] <- NA
-      Zb <- abs((R %*% Xb) / sqrt(V))
-      k  <- k + rowSums(Zb >= abs(z_ref), na.rm = TRUE); nv <- nv + rowSums(!is.na(Zb))
+      Zb <- (R %*% Xb) / sqrt(V)
+      k  <- k + rowSums(abs(Zb) >= abs(z_ref), na.rm = TRUE); nv <- nv + rowSums(!is.na(Zb))
+      q  <- q + rowSums(Zb^2, na.rm = TRUE)
     }
-    ifelse(is.na(z_ref) | nv == 0, NA_real_, (k + 1) / (nv + 1))
+    sigma <- sqrt(q / pmax(nv, 1))
+    list(p = ifelse(is.na(z_ref) | nv == 0, NA_real_, (k + 1) / (nv + 1)),
+         p_sigma = ifelse(is.na(z_ref) | nv == 0 | sigma <= 0, NA_real_, 2 * pnorm(-abs(z_ref) / sigma)),
+         sigma = sigma)
   }
   z_chk <- { x <- D[, center_idx] / max(D[, center_idx]); S1 <- W %*% x
              as.numeric((R %*% x) / sqrt(W %*% x^2 - S1^2 / S0)) }
@@ -135,16 +148,31 @@ analizza <- function(threads) {
       "sd", round(sd(mor_campi), 3), "\n")
   p_sp <- p_campi(X_true, z_true)
   rm(X_true); invisible(gc())
+  cat("sigma di Z sotto il nullo spettrale: mediana", round(median(p_sp$sigma, na.rm = TRUE), 2),
+      "| 5%-95%:", paste(round(quantile(p_sp$sigma, c(0.05, 0.95), na.rm = TRUE), 2), collapse = " - "),
+      "(1 = nessuna inflazione)\n")
+  p_10k <- rep(NA_real_, length(geni))
+  if (SAMPLE_ID %in% DATASET_VERIFICA) {
+    cat("Verifica risoluzione:", B_VERIFICA, "campi ...\n")
+    p_10k <- p_campi(campi_spettrali(x_true, B_VERIFICA, NL_SEED + 999), z_true)$p
+    invisible(gc())
+  }
 
   nul <- data.frame(gene_id = geni, z = z_true, p_score = 2 * pnorm(-abs(z_true)),
-                    p_corr = pc$p, p_spet = p_sp, log_p = log_p, stringsAsFactors = FALSE) %>%
+                    p_corr = pc$p, p_spet = p_sp$p, p_sigma = p_sp$p_sigma, sigma = p_sp$sigma, p_10k = p_10k,
+                    log_p = log_p, stringsAsFactors = FALSE) %>%
     left_join(glm_lin %>% select(gene_id, p_QL = p_value, fdr_QL = fdr), by = "gene_id") %>%
-    mutate(fdr_corr = p.adjust(p_corr, "BH"), fdr_spet = p.adjust(p_spet, "BH"))
+    mutate(fdr_corr = p.adjust(p_corr, "BH"), fdr_spet = p.adjust(p_spet, "BH"),
+           fdr_sigma = p.adjust(p_sigma, "BH"), fdr_10k = p.adjust(p_10k, "BH"))
   rk <- function(f, p) { r <- order(order(f, p, nul$log_p)); r[is.na(f)] <- NA_integer_; r }
   nul$rank_corr <- rk(nul$fdr_corr, nul$p_corr)
   nul$rank_spet <- rk(nul$fdr_spet, nul$p_spet)
+  nul$rank_sigma <- rk(nul$fdr_sigma, nul$p_sigma)
+  nul$rank_10k   <- rk(nul$fdr_10k, nul$p_10k)
   cat("Significativi GLM_linear: QL", sum(nul$fdr_QL < ALPHA, na.rm = TRUE),
-      "| corr", sum(nul$fdr_corr < ALPHA, na.rm = TRUE), "| spettrale", sum(nul$fdr_spet < ALPHA, na.rm = TRUE), "\n")
+      "| corr", sum(nul$fdr_corr < ALPHA, na.rm = TRUE), "| spettrale", sum(nul$fdr_spet < ALPHA, na.rm = TRUE),
+      "| spettrale_sigma", sum(nul$fdr_sigma < ALPHA, na.rm = TRUE),
+      if (any(!is.na(nul$p_10k))) paste("| spettrale_10k", sum(nul$fdr_10k < ALPHA, na.rm = TRUE)) else "", "\n")
 
   # falsi centri
   set.seed(NL_SEED)
@@ -160,12 +188,14 @@ analizza <- function(threads) {
     psj <- p_campi(campi_spettrali(D[, j], B_FALSI, NL_SEED + i), Z1_scan[, j])
     bind_rows(riga_f(j, "GLM_linear", 2 * pnorm(-abs(Z1_scan[, j]))),
               if (pcj$n >= N_MIN_CENTRI) riga_f(j, "GLM_linear_corr", pcj$p),
-              riga_f(j, "GLM_linear_spettrale", psj))
+              riga_f(j, "GLM_linear_spettrale", psj$p),
+              riga_f(j, "GLM_linear_spettrale_sigma", psj$p_sigma))
   }))
   rm(R, W, V_ev, A, D); invisible(gc())
 
   # Golden Standard
-  METODI <- c("GLM_linear", "GLM_linear_corr", "GLM_linear_spettrale",
+  METODI <- c("GLM_linear", "GLM_linear_corr", "GLM_linear_spettrale", "GLM_linear_spettrale_sigma",
+              if (any(!is.na(nul$p_10k))) "GLM_linear_spettrale_10k",
               intersect(c("SPATA2", "SpatialDE_orig"), unique(as.character(all_results$Method))))
   if (pc$n < N_MIN_CENTRI) METODI <- setdiff(METODI, "GLM_linear_corr")
   gs_ids <- unique(all_results$gene_id[all_results$is_GS %in% TRUE])
@@ -174,6 +204,8 @@ analizza <- function(threads) {
       mutate(Method = as.character(Method)) %>% select(Method, gene_id, fdr, rank, tested),
     nul %>% transmute(Method = "GLM_linear_corr", gene_id, fdr = fdr_corr, rank = rank_corr, tested = !is.na(fdr_corr)),
     nul %>% transmute(Method = "GLM_linear_spettrale", gene_id, fdr = fdr_spet, rank = rank_spet, tested = !is.na(fdr_spet)),
+    nul %>% transmute(Method = "GLM_linear_spettrale_sigma", gene_id, fdr = fdr_sigma, rank = rank_sigma, tested = !is.na(fdr_sigma)),
+    nul %>% transmute(Method = "GLM_linear_spettrale_10k", gene_id, fdr = fdr_10k, rank = rank_10k, tested = !is.na(fdr_10k)),
     data.frame(Method = "Expression_control", gene_id = geni, fdr = NA_real_,
                rank = order(order(-rowMeans(logcounts_raw)[geni])), tested = TRUE)) %>%
     filter(Method %in% c(METODI, "Expression_control")) %>%
@@ -300,12 +332,15 @@ analizza <- function(threads) {
        geni  = tab_geni %>% mutate(dataset = ds),
        tgsea = tab_gsea %>% mutate(dataset = ds),
        falsi = tab_falsi,
-       pv    = nul %>% select(gene_id, p_QL, p_score, p_corr, p_spet) %>% mutate(dataset = ds),
+       pv    = nul %>% select(gene_id, p_QL, p_score, p_corr, p_spet, p_sigma, p_10k, sigma) %>% mutate(dataset = ds),
        riass = data.frame(dataset = ds, n_spot = n, centri_corr = pc$n,
                           moran_raggio = round(mor_raggio, 3), moran_campi = round(mean(mor_campi), 3),
                           n_sig_QL = sum(nul$fdr_QL < ALPHA, na.rm = TRUE),
                           n_sig_corr = sum(nul$fdr_corr < ALPHA, na.rm = TRUE),
-                          n_sig_spet = sum(nul$fdr_spet < ALPHA, na.rm = TRUE)))
+                          n_sig_spet = sum(nul$fdr_spet < ALPHA, na.rm = TRUE),
+                          n_sig_sigma = sum(nul$fdr_sigma < ALPHA, na.rm = TRUE),
+                          n_sig_10k = if (any(!is.na(nul$p_10k))) sum(nul$fdr_10k < ALPHA, na.rm = TRUE) else NA_integer_,
+                          sigma_mediana = round(median(nul$sigma, na.rm = TRUE), 2)))
 }
 
 # ==========================================================================================
@@ -371,7 +406,8 @@ for (x in list(list(riass, "riassunto"), list(geni, "tab_geni"), list(gsea, "tab
   write_csv(x[[1]], file.path(OUT_DIR, paste0("nulli_", x[[2]], ".csv")))
 
 # --- 3. Grafici della calibrazione ------------------------------------------------------------
-COL_T <- c(GLM_linear = "#7570b3", GLM_linear_corr = "#1b9e77", GLM_linear_spettrale = "#e6ab02")
+COL_T <- c(GLM_linear = "#7570b3", GLM_linear_corr = "#1b9e77", GLM_linear_spettrale = "#e6ab02",
+           GLM_linear_spettrale_sigma = "#a6761d", GLM_linear_spettrale_10k = "#66a61e")
 tema0 <- theme_minimal(base_size = 9) + theme(strip.text = element_text(face = "bold"))
 if (nrow(falsi) > 0) {
   pf <- falsi %>% mutate(Method = factor(Method, levels = rev(names(COL_T)))) %>%
@@ -392,18 +428,29 @@ if (nrow(falsi) > 0) {
   print(pb); ggsave(file.path(OUT_DIR, "nulli_00b_falsi_centri_bh.png"), pb, width = 11, height = 5.5, dpi = 150)
 }
 if (nrow(pv) > 0) {
-  ph <- pv %>% pivot_longer(c(p_QL, p_corr, p_spet), names_to = "Test", values_to = "p") %>% filter(!is.na(p)) %>%
-    mutate(Test = recode(Test, p_QL = "GLM parametrico (QL)", p_corr = "nullo corr", p_spet = "nullo spettrale")) %>%
+  ph <- pv %>% pivot_longer(c(p_QL, p_corr, p_spet, p_sigma), names_to = "Test", values_to = "p") %>% filter(!is.na(p)) %>%
+    mutate(Test = factor(recode(Test, p_QL = "GLM parametrico (QL)", p_corr = "nullo corr", p_spet = "spettrale",
+                                p_sigma = "spettrale sigma"),
+                         levels = c("GLM parametrico (QL)", "nullo corr", "spettrale", "spettrale sigma"))) %>%
     ggplot(aes(x = p)) + geom_histogram(breaks = seq(0, 1, 0.05), fill = "grey55", colour = "white") +
     facet_grid(dataset ~ Test, scales = "free_y") + tema0 + theme(strip.text.y = element_text(angle = 0)) +
     labs(title = "P-value al centro vero", subtitle = "barra a sinistra = geni con segnale | piatto altrove = test calibrato sui nulli",
          x = "p", y = "geni")
   print(ph); ggsave(file.path(OUT_DIR, "nulli_00c_istogrammi_p.png"), ph, width = 10, height = 1.6 * n_distinct(pv$dataset) + 1, dpi = 150)
+  psg <- ggplot(pv %>% filter(is.finite(sigma)), aes(x = sigma)) +
+    geom_vline(xintercept = 1, linetype = "dashed", colour = "grey40") +
+    geom_histogram(bins = 60, fill = "#a6761d", colour = "white") + scale_x_log10() +
+    facet_wrap(~ dataset, ncol = 3, scales = "free_y") + tema0 +
+    labs(title = "Inflazione di Z per gene sotto il nullo spettrale (sigma)",
+         subtitle = "1 = come prevede il test parametrico | 3 = Z tre volte piu' grandi del previsto anche senza un gradiente vero",
+         x = "sigma (scala log)", y = "geni")
+  print(psg); ggsave(file.path(OUT_DIR, "nulli_00d_sigma.png"), psg, width = 11, height = 5.5, dpi = 150)
 }
 
 # --- 4. Golden Standard e GSEA (come la pipeline) -----------------------------------------------
 ALPHA_G <- 0.05; B_GS <- 1000; B_CTX <- 1000; SEED_G <- 20261029
-LIV <- c("GLM_linear", "GLM_linear_corr", "GLM_linear_spettrale", "SPATA2", "SpatialDE_orig", "Expression_control")
+LIV <- c("GLM_linear", "GLM_linear_corr", "GLM_linear_spettrale", "GLM_linear_spettrale_sigma",
+         "GLM_linear_spettrale_10k", "SPATA2", "SpatialDE_orig", "Expression_control")
 COL <- c(COL_T, SPATA2 = "#d95f02", SpatialDE_orig = "#e7298a", Expression_control = "grey50")
 rk_all <- R_ranks
 gs_all <- R_gsea
