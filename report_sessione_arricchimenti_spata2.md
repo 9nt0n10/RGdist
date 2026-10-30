@@ -1,297 +1,269 @@
-# Report di sessione: arricchimenti, calibrazione dei test, SPATA2
+# Report: limiti di SPATA2, FDR a zero, `rm_zero_infl` e arricchimenti come benchmark
 
-Report da passare a un'altra conversazione. Riassume cosa è stato fatto sulla
-pipeline (partita come `pipeline_v7`, oggi `pipeline_v8` e `pipeline_v8_noinfl`),
-cosa è stato scoperto, quali decisioni ha preso
-l'autore e cosa resta aperto. Dove un'informazione è una deduzione non
-verificata, è indicato.
+Informazioni ricavate in questa sessione dall'analisi dei risultati del benchmark
+(6 dataset Visium: heme_1000, stab_inj1, stab_inj2, gbm, perio, head_and_neck),
+dal paper di SPATA2 (Kueckelhaus et al., *Nature Communications* 2024) e dal
+tutorial ufficiale (themilolab.github.io/SPATA2). Dove un'informazione è una
+deduzione e non un dato, è indicato.
 
-## 0. Contesto
+**Pipeline**
+- `pipeline_v8`: SPATA2 con `rm_zero_infl = TRUE`, output in `benchmark_v8/<dataset>`.
+- `pipeline_v8_noinfl`: SPATA2 con `rm_zero_infl = FALSE`, output in
+  `benchmark_v8_noinfl/<dataset>`.
+- Per il resto le due pipeline sono identiche, e in entrambe ogni metodo entra con
+  la propria lista di geni. Il filtro "espresso in ≥ 3 spot" vale solo per i GLM:
+  SPATA2 usa il suo output intero, SpatialDE il suo CSV, Moran e Laplacian tutti i
+  geni con almeno un conteggio.
+- I numeri marcati "universo comune" vengono dalla versione precedente
+  (`pipeline_v7`), dove tutti i metodi erano ristretti ai geni del filtro dei GLM e
+  i geni non testati andavano in coda.
 
-- **Progetto:** benchmark di metodi per trovare geni con gradiente spaziale in
-  trascrittomica spaziale (Visium), rispetto a un centro (sito di lesione o
-  iniezione).
-- **Metodi confrontati:**
-  - GLM radiali (edgeR, lineare e gaussiano sulla distanza dal centro);
-  - GLM su centro inferito e su pseudotime (Gaston, SpaceFlow, Slingshot, Monocle);
-  - Hybrid_GLM;
-  - riferimenti center-free: Moran's I, Laplacian Score, SpatialDE (da CSV);
-  - tool esterno SPATA2 (`spatialAnnotationScreening`).
-- **Valutazione:**
-  - Golden Standard (geni differenziali dell'articolo di ogni dataset): boxplot
-    dei rank, ROC/AUC, AUC con intervallo bootstrap;
-  - GSEA per metodo.
-- **Dataset (6):** heme_1000 (topo, iniezione di eme), stab_inj1 e stab_inj2
-  (lesione cerebrale), gbm (glioblastoma, topo), perio (parodontite), head_and_neck
-  (tumore). Contesto di arricchimento: "inflammation" per heme, stab, perio;
-  "tumor" per gbm e head_and_neck.
-- **Codice:** la pipeline attuale esiste in due versioni, identiche tranne per
-  il parametro di SPATA2 `SPATA2_RM_ZERO_INFL`:
-  - `pipeline_v8`: `rm_zero_infl = TRUE`, output in cartelle `benchmark_v8/<dataset>`;
-  - `pipeline_v8_noinfl`: `rm_zero_infl = FALSE`, output in `benchmark_v8_noinfl/<dataset>`.
-  Entrambe contengono tutte le modifiche del §1. Nel repo GitHub `9nt0n10/RGdist`
-  (branch `claude/nifty-ride-xypva8`, nessuna pull request) lo stesso codice è
-  ancora salvato come `pipeline_v7.ipynb`: il nome nel repo non è stato
-  aggiornato. Ogni dataset ha un proprio notebook con lo stesso codice comune e
-  un blocco dataset diverso: **le modifiche vanno copiate negli altri notebook**.
-- **Regola di ordinamento dei geni (decisa dall'autore):** FDR crescente, poi la
-  statistica del metodo come spareggio:
-  - GLM: `log_p`;
-  - Moran: Z;
-  - SpatialDE: LLR;
-  - SPATA2: `tot_var`.
+---
 
-## 1. Modifiche fatte alla pipeline (da `pipeline_v7` a `pipeline_v8`)
+## 1. Come SPATA2 calcola il p-value (dal paper)
 
-Tutto quanto sotto è già in `pipeline_v8` e `pipeline_v8_noinfl` (nel repo:
-`pipeline_v7.ipynb`, ultimo commit del branch).
+- **Statistica.** Per ogni gene, SPATA2 ricava il profilo di espressione in funzione
+  della distanza dall'annotazione, lo smussa (loess) e ne misura la variazione
+  totale (`tot_var`, TV). Più il profilo è liscio, più è basso il TV, e più per
+  SPATA2 il gradiente è "non casuale".
+- **Nullo.** "We first simulate random expression gradients by assigning random
+  expression values to all data points within the screened area". La simulazione è
+  ripetuta 10000 volte.
+- **p-value.** È la frazione di gradienti simulati con TV minore o uguale a quello
+  osservato. Prima si tolgono gli outlier del TV simulato con il criterio
+  dell'intervallo interquartile (IQR). Poi si applica BH, e il risultato è la
+  colonna `fdr`.
+- **Conseguenza.** Il nullo è fatto di valori casuali **senza struttura spaziale**.
+  Qualunque gene con una struttura spaziale, anche non legata all'annotazione, ha
+  un profilo più liscio di tutti i profili casuali. Il p-value quindi non misura
+  "gradiente legato a questa zona" ma "il profilo non è rumore puro". È lo stesso
+  limite dei p-value parametrici del GLM.
+- **Nel paper stesso,** un esempio sul glioblastoma dà 11.478 geni con FDR < 0.05.
+- **Deduzione da verificare:** se il nullo è uguale per tutti i geni, il p-value è
+  solo una trasformazione monotona di `tot_var` e non aggiunge informazione
+  all'ordine.
 
-### 1.1 GSEA (sezione 16) semplificata
-- Una GSEA per metodo (`clusterProfiler::GSEA`) sulla lista ordinata come sopra.
-- Punteggio = posizione (N…1) invece della vecchia scala 1→0. Equivalente per la
-  GSEA, ma più semplice.
-- `exponent = 0`: KS non pesata, conta solo l'ordine dei geni.
-- `scoreType = "pos"`: la classifica non ha segno.
-- Nessuna soglia sui pathway: si leggono NES e AUC contesto contro altri sul NES
-  (`simple_auc`, intervallo bootstrap, test di permutazione). `p_adjust` resta
-  solo come informazione nei CSV.
-- Controlli negativi nella stessa GSEA: `Expression_control` (geni ordinati per
-  espressione media) e `Random_control`.
-- Nuovi grafici: `04_enrichment_context_auc.png` (AUC di contesto con IC),
-  `04b` (NES dei 40 pathway di contesto più alti, senza filtro), `04c` (boxplot
-  dei NES contesto/altri).
-- Salva `enrichment_context_methods.csv` (tabella `enr_tab`).
+## 2. Geni con p = 0 e FDR = 0
 
-### 1.2 Sezioni rimosse
-- **14d**, delta-AUC appaiato contro Moran's I, e il parametro `AUC_REF_METHOD`.
-- **17**, GSEA sui geni comuni a tutti i metodi.
-- Sezioni 19 (riepilogo) e 20 (file di verifica) adattate: usano `simple_auc` e
-  non hanno più delta-AUC né `enr_delta`.
+- **heme_1000, senza filtro:**
+  - 1822 geni hanno p esattamente 0, quindi FDR 0, tutti pari merito;
+  - 2422 geni hanno p ≤ 0.001.
+- **gbm, `pipeline_v8_noinfl`:**
+  - 3950 geni hanno p = 0;
+  - le prime 3000 posizioni della classifica hanno tutte un solo valore di FDR (0);
+  - fra 3000 e 4000 ci sono altri 950 geni con p = 0;
+  - il primo FDR diverso da zero è 0.00048.
+- **Tutto il blocco a FDR 0 è ordinato solo dallo spareggio,** cioè `tot_var`
+  crescente (`arrange(fdr, tot_var)`).
+- **Più simulazioni non risolvono.** Questi geni non stanno al limite della
+  distribuzione nulla, stanno ben oltre. Con 100000 simulazioni avrebbero comunque
+  p = 0.
 
-### 1.3 Nuova regola sui geni: il filtro vale solo per i GLM
-Decisione dell'autore: nessun universo comune, ogni metodo con la propria lista
-intera, sia per boxplot e AUC sia per la GSEA.
-- **Sezione 4:** il filtro "espresso in ≥ `MIN_SPOTS_PER_GENE` (3) spot" resta su
-  `spe` e vale solo per i GLM (lineare, gaussiano, inferiti, pseudotime, Hybrid,
-  scansione 9c, diagnostiche 10e e 10f). Prima del filtro si salva
-  `logcounts_all`: tutti i geni con almeno un conteggio, dopo QC degli spot e
-  rimozione dei mitocondriali.
-- **10b (SpatialDE):** lista intera del CSV (`sde_full`), ordinata per qval e poi
-  LLR. Niente taglio sull'universo, niente coda di non testati.
-- **10d (Moran, Laplacian):** calcolati su `logcounts_all`.
-- **11b (SPATA2):** lista intera dell'output (`spata2_full`), ordinata per FDR e poi
-  `tot_var`, senza coda. Nel riepilogo di SPATA2 ci sono `geni_in_lista` e
-  `geni_tolti_dal_filtro_glm`.
-- **15:** l'universo per scegliere i pathway e per i controlli è l'unione delle
-  liste con almeno un conteggio. `T2_full` = pathway scelti con tutti i loro
-  geni, così ogni GSEA li interseca con la propria lista.
-- **16:** stampa per metodo `geni` e `tolti_dal_filtro_glm`.
-- Tolti i parametri della coda (`SDE_ORIG_NON_TESTATI`, seed della coda).
-- **Va rieseguito dalla sezione 4:** i checkpoint vecchi non hanno `logcounts_all`.
+## 3. Artefatto sui geni con molti zeri
 
-Esempio di liste risultanti in perio: GLM 15163 geni; Moran e Laplacian 16790
-(1627 espressi in < 3 spot); SpatialDE 15164; SPATA2 8999 con
-`rm_zero_infl = TRUE` (vedi §5).
+- **heme_1000, senza filtro:**
+  - l'output di SPATA2 ha 17941 geni;
+  - 1747 di questi sono fuori dal filtro dei GLM (espressi in < 3 spot), e SPATA2 ne
+    chiama significativo il **96.2%** (1681), contro l'11.3% dei geni espressi in ≥ 3
+    spot;
+  - fra i primi in classifica ci sono recettori olfattivi e vomeronasali
+    (*Olfr718-ps1*, *Vmn1r32*), geni predetti (*Gm44928*) e geni testicolari (*Tex45*),
+    senza senso biologico per un gradiente spaziale.
+- **gbm, `pipeline_v8_noinfl`, composizione della classifica di SPATA2 per fasce:**
 
-### 1.4 Cosa NON è ancora stato implementato (proposto, in attesa di conferma)
-- AUC sul Golden Standard con i geni del GS **non testati da un metodo contati
-  come mancati** (messi in fondo). Con liste diverse è l'unica AUC equa.
-- Boxplot con **rank relativo** (posizione / lunghezza della lista), GS non
-  testati al 100%. Il rank grezzo inganna con liste di lunghezza diversa.
-- `METHOD_ORDER` (sezione 12) basato sul rank relativo invece che grezzo.
-- Riepilogo con i geni del GS presenti in ogni lista.
-- Scegliere una sola versione: se si adotta `rm_zero_infl = FALSE`,
-  `pipeline_v8_noinfl` diventa la pipeline di riferimento. In entrambe il
-  commento accanto a `SPATA2_RM_ZERO_INFL` dice "default del tool", ma
-  probabilmente il default è FALSE (vedi §3.6).
+  | Rank | Geni espressi in < 3 spot | Geni del GS | `tot_var` mediana |
+  |---|---|---|---|
+  | 1–500 | 165 | 216 | 1.254 |
+  | 501–1000 | 63 | 348 | 1.753 |
+  | 1001–1500 | 319 | 87 | 2.000 |
+  | 1501–2000 | 466 | 0 | 2.000 |
+  | 2001–2500 | 425 | 15 | 2.000 |
+  | 2501–3000 | 134 | 227 | 2.104 |
 
-## 2. Script autonomi creati (nel repo, fuori dalla pipeline)
+  La fascia 1500–2500 è il "buco" senza geni del Golden Standard nel boxplot dei
+  rank: 891 geni su 1000 sono espressi in meno di 3 spot, tutti con p = 0 e
+  `tot_var` = 2.000.
+- **Spiegazione (dedotta).** SPATA2 riscala ogni profilo fra 0 e 1. Un gene acceso in
+  un solo spot dà un profilo piatto con una punta che sale da 0 a 1 e riscende: la
+  variazione totale è esattamente 2. I profili casuali sono più frastagliati, quindi
+  il gene ha p = 0. Inoltre, nel blocco a FDR 0 lo spareggio per `tot_var` crescente
+  premia proprio i profili piatti.
+- **Gli autori stessi riconoscono il limite:** "Given the limitations of the
+  spatial gradient screening algorithm in handling variables with a high proportion
+  of zero values, we advise pre-emptively removing such variables."
 
-| Script | Cosa fa |
-|---|---|
-| `diagnostica_dataset.R` | legge i CSV di più dataset: % significativi, recupero e fold del GS, GSEA (AUC di contesto, correlazione col controllo sull'espressione), nullo 10f, AUC, calibrazione 10e, confronto SPATA2–altri (sovrapposizione, Spearman, saturazione p), geni significativi di SPATA2 fuori universo |
-| `prova_p_empirico*.R` | prova del p empirico dai "centri lontani" (superata, vedi §4) |
-| `prova_nulli.R` | file unico: due nulli spaziali per GLM_linear (centri poco correlati, randomizzazione spettrale, più versione sigma e 10000 campi), controllo con falsi centri, GS e GSEA, 6 dataset in parallelo, output in una cartella |
-| `confronto_zero_infl.R` | confronta due run della pipeline (SPATA2 con `rm_zero_infl` TRUE e FALSE): liste, significativi, GS (recuperati, AUC propria e con mancanti in fondo, rank relativo), GSEA, dettaglio SPATA2. Controllo di coerenza: cambia solo SPATA2 |
+## 4. `rm_zero_infl`: cosa fa
 
-Nessuno script è stato eseguito nell'ambiente di sviluppo (senza R): li ha
-eseguiti l'autore, e i numeri sotto vengono dai suoi output.
+- **Regola (dal paper).** Per ogni gene si tolgono gli spot oltre 1.5 IQR sopra il
+  terzo quartile o sotto il primo. Se restano solo zeri (tutti i valori non nulli
+  sono outlier), il gene è "zero-inflated" e viene escluso dallo screening. Per quei
+  geni non viene calcolato nessun p-value.
+- **Effetto pratico (dedotto dalla regola).** Se un gene è zero in più del 75% degli
+  spot, primo e terzo quartile valgono 0, l'IQR è 0 e ogni valore positivo è un
+  outlier. Quindi l'opzione esclude in pratica i geni rilevati in meno di circa un
+  quarto degli spot, cioè anche i geni espressi solo in una zona localizzata come una
+  lesione o un aggregato cellulare.
+- **Valore predefinito.** Il paper dice che l'opzione "can be activated by setting
+  the parameter rm_zero_infl to TRUE", il che indica che il predefinito sia FALSE
+  (deduzione). Il commento nella pipeline ("default del tool") è probabilmente
+  sbagliato. Il tutorial ufficiale non nomina l'opzione.
 
-## 3. Risultati principali
+## 5. SPATA2 con e senza `rm_zero_infl`
 
-### 3.1 Il numero di geni/pathway significativi non è un buon benchmark
-- Il solo ordinamento per espressione dà 750–1800 pathway con FDR < 0.05 per
-  dataset, quanti il GLM. Il numero di pathway segue il numero di geni
-  significativi e l'espressione.
-- L'AUC di contesto del GLM varia molto fra dataset (circa 0.45–0.77).
-- La classifica non ha direzione.
-- Conclusione condivisa con l'autore: arricchimento come analisi descrittiva,
-  non per decidere quale metodo è migliore.
+### gbm (`pipeline_v8` contro `pipeline_v8_noinfl`)
 
-### 3.2 I p-value del GLM sono troppo ottimistici (autocorrelazione spaziale)
-- **Significativi:** il GLM lineare parametrico chiama significativo dal 7% al 69%
-  dei geni secondo il dataset. Moran (~42%) e SpatialDE (~35%) sono simili in
-  heme_1000.
-- **Nullo spaziale 10f (heme_1000):**
-  - centro vero: 6023 geni significativi (score test);
-  - centri lontani: mediana 3707, p empirico 0.0009 (lineare), 0.018 (gaussiano).
-  - Il centro conta, ma circa il 60% dei significativi esce con qualunque centro.
-- **Calibrazione 10e:** la profondità spiega poco (frazione con p < 0.05 sotto il
-  nullo 0.06–0.17, contro 0.45–0.55 osservata).
-- **Falsi centri (`prova_nulli.R`, 6 dataset):** con un centro finto il GLM
-  parametrico trova 1500–5000 geni BH-significativi, e il 20–36% dei geni ha
-  p < 0.05.
+| | senza filtro | con filtro |
+|---|---|---|
+| Geni nella lista di SPATA2 | 20503 | 5455 (−73%) |
+| Geni significativi (FDR < 0.05) | 8124 | 2419 |
+| Geni del GS nella lista (su 7280) | 7280 | 3549 |
+| GS recuperati (FDR < 0.05) | 3693 (50.7%) | 2199 (30.2%) |
+| AUC sul GS, sulla propria lista | 0.633 | 0.847 |
+| AUC sul GS, con i GS non testati in fondo | 0.633 | 0.413 |
+| GLM lineare, AUC sul GS (per confronto) | 0.949 | 0.949 |
 
-### 3.3 Correzioni provate per il p del GLM
-- **Centri lontani** (oltre la mediana della distanza): difettosa. Le distanze
-  sono correlate con quella vera; la versione con segno era più permissiva del
-  parametrico in stab_inj1, stab_inj2 e head_and_neck.
-- **Centri con |r| < 0.3:** non calibrata. Con i falsi centri dà ancora
-  1400–3600 geni BH-significativi (0 solo in perio).
-- **Randomizzazione spettrale:** campi casuali con lo stesso spettro di
-  autocorrelazione del raggio, sugli autovettori della matrice dei 6 vicini.
-  - Moran's I dei campi circa 1.0, uguale al raggio.
-  - **È l'unica calibrata:** falsi centri con 0 geni BH-significativi in 5 dataset
-    su 6 (gbm 204, contro 5081 del parametrico).
-  - Costo: AUC sul GS −0.01/−0.08.
-  - stab_inj1 e stab_inj2: 0 significativi anche col centro vero (risoluzione con
-    1000 campi).
-  - Preparate ma non lanciate: versione sigma, p = 2Φ(−|Z|/σ_gene), e versione
-    con 10000 campi.
-- **Decisione dell'autore:** tenere il GLM parametrico per l'ordine dei geni (le
-  ROC peggioravano con le correzioni). Il nullo spettrale serve solo se si
-  vogliono presentare conteggi di geni significativi.
+- **Geni del GS tolti dal filtro:** 3731. Fra questi ci sono marcatori di
+  proliferazione (*Mki67*, *Cdk1*, *Plk1*, *Bub1*, *Cdc6*, *Ska1*, *Exo1*), di
+  risposta all'interferone (*Apol9a*, *Apol9b*, *Sp140*, *Epsti1*) e altri geni del
+  contesto tumorale (*Cdkn2a*, *Hmga2*, *Timp1*).
+  - 1545 di questi erano significativi senza filtro, molti fra le prime 300
+    posizioni.
+  - Rank relativo mediano, senza filtro: 0.454 per i GS tolti, 0.332 per quelli tenuti.
+- **L'ordine dei geni rimasti è identico** (Spearman 1): il filtro toglie geni, non
+  cambia la classifica.
+- **Sovrapposizione dei significativi fra i due run:** 2355 in comune, Jaccard 0.288.
+- Fra i due run non cambia nessun altro metodo (controllo di coerenza superato).
 
-### 3.4 L'ordine dei geni del GLM è solido, ma in parte legato all'espressione
-- AUC sul GS dei GLM con centro: 0.83–0.98, la migliore o fra le migliori in ogni
-  dataset. SPATA2 è sotto il GLM in tutti e sei.
-- AUC sul GS ordinando solo per espressione media: gbm 0.81, head_and_neck 0.87,
-  perio 0.71, heme 0.67, stab_inj 0.33–0.40. In alcuni dataset il GS è legato
-  all'espressione.
-- In gbm il GS ha 7280 geni (circa 35% dei testati): sopra il 30% la pipeline
-  avverte che boxplot e ROC distinguono poco.
+### perio (`pipeline_v8`, con filtro)
+- La lista di SPATA2 ha 8999 geni, contro i 15163 dei GLM, e solo 11 sono fuori dal
+  filtro dei GLM. Nella versione con universo comune e senza filtro, SPATA2 aveva un
+  FDR per 15149 geni.
+- Toglie 126 dei 353 geni del Golden Standard, quasi tutti dell'infiltrato
+  immunitario:
+  - linfociti T: *CD3D*, *LCK*, *ZAP70*, *TRAC*, *TRBC1*, *CD247*, *IL7R*, *TCF7*,
+    *CTLA4*;
+  - linfociti B e plasmacellule: *CD79A*, *MZB1*, *IGHM*, *IGHG3*, *IRF4*, *POU2AF1*;
+  - chemochine e marcatori di aggregati linfoidi: *CXCR4*, *CCR7*, *CCL19*, *CCL5*,
+    *SELL*, *PTPRC*.
 
-### 3.5 SPATA2: cosa fa davvero (dal paper Nat Commun 2024 e dal sito)
-- **p-value:** frazione di 10000 profili simulati da "valori casuali assegnati a
-  tutti gli spot" con `tot_var` ≤ quella osservata. Il nullo non ha struttura
-  spaziale: stesso problema del GLM. Nel paper, un esempio sul glioblastoma dà
-  11.478 geni significativi.
-- **Saturazione:** in gbm (senza filtro) 3450 geni hanno p = 0. Fra loro decide solo
-  `tot_var`. Probabilmente il p è funzione della sola `tot_var` (nullo uguale per
-  tutti i geni): **da verificare** con Spearman fra `p_value` e `tot_var`.
-- **Artefatto sui geni sparsi:** fra le posizioni 1500 e 2500 di SPATA2 in gbm,
-  891/1000 geni sono espressi in < 3 spot, con `tot_var` = 2.000 e p = 0. È il
-  "buco" senza geni del GS nel boxplot. Spiegazione dedotta: SPATA2 riscala il
-  profilo fra 0 e 1, e un gene acceso in uno spot dà una punta 0→1→0 con
-  variazione totale 2. In heme_1000, senza filtro, SPATA2 chiamava significativo
-  il 96% (1681/1747) dei geni sparsi.
-- **Preprocessing nella pipeline (11b) rispetto al tutorial ufficiale:**
-  - uguali: `initiateSpataObjectVisium`, `removeGenesZeroCounts`,
-    `removeObsZeroCounts`, `normalizeCounts` (LogNormalize), `core = FALSE`,
-    distanza predefinita (bordo del tessuto);
-  - diversi: `identifyTissueOutline` e `identifySpatialOutliers` sono chiamati
-    con i default, mentre il tutorial usa `method = "obs"`, `eps = "125um"`,
-    `minPts = 3`;
-  - manca `removeGenesStress()` (facoltativo nel tutorial);
-  - **differenza principale:** il tutorial fa lo screening solo sui geni
-    selezionati da SPARK-X (`runSPARKX`, `getSparkxGenes`, p < 0.05), la
-    pipeline su tutti i geni. Per il benchmark serve una classifica completa,
-    quindi è uno scostamento da dichiarare;
-  - il tutorial usa anche `@results$model_fits` (MAE < 0.2, come esempio) e i
-    modelli "descending"/"ascending" per la **direzione**: SPATA2 può dare un
-    segno, che la pipeline non usa.
+  Nella parodontite sono i geni dell'infiammazione, cioè il contesto biologico.
 
-### 3.6 SPATA2 e `rm_zero_infl`
-- **Regola dal paper:** si tolgono gli outlier oltre 1.5 IQR; se restano solo zeri,
-  il gene è "zero-inflated" ed escluso. In pratica (deduzione) toglie i geni
-  rilevati in meno di circa il 25% degli spot. Il paper dice che l'opzione "can be
-  activated" ponendola a TRUE, quindi il default sembra FALSE (da verificare con
-  `formals(SPATA2::spatialAnnotationScreening)$rm_zero_infl`). Gli autori ne
-  consigliano l'uso.
-- **perio, con TRUE (`pipeline_v8`):**
-  - lista di 8999 geni contro 15163;
-  - perde 126/353 geni del GS, quasi tutti dell'infiltrato immunitario (*CD3D*,
-    *LCK*, *PTPRC*, *CXCR4*, *CCR7*, *CD79A*, immunoglobuline);
-  - AUC SPATA2: 0.861 sulla propria lista, 0.554 con i mancanti in fondo;
-  - GLM lineare: 0.895 (0.915–0.927 per i GLM con centro sui soli geni di SPATA2).
-- **gbm, TRUE contro FALSE (`confronto_zero_infl.R` su `pipeline_v8`, output
-  `benchmark_v8/gbm`, e `pipeline_v8_noinfl`, output `benchmark_v8_noinfl/gbm`):**
-  - lista 5455 contro 20503 (−73%);
-  - GS nella lista 3549 contro 7280; tolti anche marcatori di proliferazione
-    (*Mki67*, *Cdk1*, *Plk1*, *Bub1*);
-  - recall GS 30.2% contro 50.7%;
-  - AUC propria 0.847 contro 0.633; con i mancanti in fondo 0.413 contro 0.633;
-  - ordine dei geni rimasti identico (Spearman 1);
-  - GLM lineare 0.949 in entrambe le letture;
-  - controllo di coerenza ok (cambia solo SPATA2).
-- **Conclusione:** con `rm_zero_infl = TRUE` l'AUC di SPATA2 sale solo perché
-  metà del GS non viene valutata. Per il benchmark: FALSE, cioè
-  `pipeline_v8_noinfl`. Un gene non testato
-  equivale a "nessuna evidenza", quindi va in fondo; non si può dargli un p-value
-  calcolato con un altro test senza smettere di valutare SPATA2.
-- **Copertura del GS senza filtro (gbm):** SPATA2 ha 7280 geni del GS, SpatialDE
-  7275, GLM, Moran e Laplacian 7267. Nessun metodo li ha tutti: geni non rilevati
-  nel campione, filtri propri, simboli non corrispondenti.
+| AUC sul Golden Standard, perio | SPATA2 | GLM lineare | GLM con centro |
+|---|---|---|---|
+| sulla propria lista | 0.861 | 0.895 | 0.895–0.897 |
+| solo sugli 8999 geni testati da SPATA2 | 0.861 | 0.915 | 0.915–0.927 |
+| con i GS non testati in fondo | 0.554 | 0.895 | 0.895–0.897 |
 
-### 3.7 Dove SPATA2 va meglio del GLM
-- Sull'arricchimento di contesto. In gbm (liste intere):
-  - AUC di contesto 0.66 (0.63 con filtro) contro 0.57 del GLM lineare;
-  - quota di pathway di contesto fra i significativi 0.31 contro 0.14;
-  - correlazione del NES con l'espressione −0.07 contro 0.65.
-- Nella versione precedente (universo comune) la quota di contesto era più alta
-  per SPATA2 in 5 dataset su 6 (non in perio). Ma SPATA2 trova pochi pathway
-  significativi (27–393), quindi la quota è calcolata su numeri piccoli.
+### Copertura del Golden Standard senza filtro (gbm)
+SPATA2 ha 7280 geni del GS nella lista, SpatialDE 7275, GLM, Moran e Laplacian
+7267. Senza filtro SPATA2 calcola un p-value per praticamente tutti i geni rilevati
+(20503 contro 20558 di Moran e Laplacian).
 
-## 4. Decisioni dell'autore (da rispettare)
-1. Ordinamento per FDR più spareggio del metodo; GSEA solo sull'ordine
-   (`exponent = 0`).
-2. Nessuna soglia sui pathway nella GSEA.
-3. Niente confronto appaiato con Moran (14d) né GSEA sui geni comuni (17).
-4. Filtro sui geni solo per i GLM; ogni altro metodo con la sua lista intera;
-   nessun universo comune e nessuna coda.
-5. GLM con p-value parametrico (le correzioni spaziali peggioravano le ROC).
-6. Orientamento: arricchimento poco adatto come benchmark fra metodi; Golden
-   Standard come misura principale.
+### In sintesi
+- **Senza filtro:** SPATA2 testa tutti i geni, ma i geni con molti zeri ricevono
+  p = 0 artefattuali e occupano posizioni alte (§3).
+- **Con il filtro:** l'artefatto sparisce, ma insieme a esso sparisce una gran parte
+  dei geni, compresi quelli localizzati del contesto biologico. L'AUC sulla
+  propria lista sale solo perché quei geni del GS non vengono più valutati;
+  contandoli come non trovati, l'AUC scende sotto il caso in gbm (0.413) e a 0.554
+  in perio.
 
-## 5. Punti aperti
-- Implementare quanto in §1.4 (AUC con GS mancanti in fondo, rank relativo,
-  `METHOD_ORDER`, copertura del GS) nella versione scelta, probabilmente
-  `pipeline_v8_noinfl`, e correggere il commento su `rm_zero_infl`.
-- Allineare il nome nel repo (`pipeline_v7.ipynb`) a quello locale.
-- Verificare che il p di SPATA2 dipenda solo da `tot_var`.
-- Allineare il preprocessing di SPATA2 al tutorial (`method = "obs"` ecc.) e
-  decidere su `removeGenesStress()` e SPARK-X (con i geni non selezionati da
-  trattare come non testati).
-- Eventuale prova "falsi centri" per SPATA2 (annotazioni finte) per misurarne i
-  falsi positivi.
-- Nullo spettrale con sigma o 10000 campi, solo se servono conteggi di
-  significativi.
-- Ripetere il confronto `rm_zero_infl` sugli altri dataset.
-- Eventuale GSEA con segno (GLM lineare dal coefficiente, SPATA2 dai modelli).
-- Copiare il codice comune nei notebook degli altri cinque dataset.
-- Laplacian_Score appare con 0% significativi: va mostrato come NA (non ha
-  p-value).
-- Ricalcolo dell'FDR di SPATA2: superato dalla regola delle liste intere (ora
-  l'FDR è quello di SPATA2 sul suo output).
+## 6. SPATA2 rispetto agli altri metodi
 
-## 6. Messaggio per i colleghi (versione concordata)
+- **AUC sul Golden Standard (universo comune, senza filtro):** SPATA2 è sotto il GLM
+  lineare in tutti e sei i dataset.
 
-> Ho lavorato un po' sugli arricchimenti di SPATA2 e ho scoperto alcune cose su
-> cui avrei bisogno di un consiglio. Innanzitutto avevo commesso un errore a
-> favore di SPATA2: gli avevo applicato il filtro che uso per i GLM, mentre lui
-> ha già i suoi filtri. Corretto questo, SPATA2 è peggiorato ulteriormente. Uno
-> dei motivi è che con i geni con molti zeri il tool va un po' in tilt (da qui il
-> buco nel boxplot dei rank: i primi migliaia di geni hanno tutti p-value 0 e
-> sono ordinati per la tot_var, che uso come spareggio, così i geni espressi in
-> pochissimi spot finiscono in alto). Per questo gli autori consigliano di
-> attivare un parametro, `rm_zero_infl`. L'ho provato (in gbm e in parodontite) e
-> sembra migliorare molto, troppo: i rank dei geni del Golden Standard diventano
-> bassissimi. Guardando meglio, è perché il parametro scarta i geni rilevati in
-> pochi spot, cioè una gran parte dei geni che gli altri tool testano, e di cui
-> quindi non abbiamo nemmeno il p-value. Scarta così anche circa metà dei geni
-> del Golden Standard in gbm e un terzo in parodontite. Contando quei geni come
-> non trovati, l'AUC di SPATA2 crolla. La frazione di pathway di contesto
-> invece resta quasi sempre a favore di SPATA2 (5 dataset su 6), ma credo che
-> gli arricchimenti non siano un buon benchmark, anche perché SPATA2 trova pochi
-> pathway significativi. Cosa ne pensate? Lascereste perdere gli arricchimenti
-> come confronto fra metodi e terreste solo il Golden Standard?
+  | | heme_1000 | stab_inj1 | stab_inj2 | gbm | perio | head_and_neck |
+  |---|---|---|---|---|---|---|
+  | SPATA2 | 0.931 | 0.676 | 0.698 | 0.722 | 0.793 | 0.708 |
+  | GLM lineare | 0.978 | 0.912 | 0.829 | 0.949 | 0.895 | 0.958 |
+
+- **Sovrapposizione dei geni significativi (heme_1000):** dei significativi di
+  SPATA2, il GLM lineare ne ritrova il 49.9%, contro il 39.3% atteso a caso.
+  Spearman fra i rank: 0.25. Su tutti i dataset lo Spearman fra i rank di SPATA2 e
+  del GLM lineare va da 0.04 a 0.50. SPATA2 non è un sottoinsieme più severo del GLM: le due
+  statistiche ordinano i geni in modo diverso.
+- **Indipendenza dall'espressione:** la correlazione del NES di SPATA2 con il
+  controllo sull'espressione è vicina a zero o negativa (da −0.53 a 0.32). Per il GLM
+  lineare va da −0.07 a 0.65.
+- **Differenze dal tutorial ufficiale:**
+  - Il tutorial fa lo screening solo sui geni selezionati come spazialmente variabili
+    da SPARK-X (`runSPARKX()`, `getSparkxGenes()`, p < 0.05); la pipeline su tutti i
+    geni.
+  - Il tutorial usa anche l'adattamento ai modelli di gradiente
+    (`@results$model_fits`, MAE < 0.2 come esempio) e ne ricava la direzione
+    ("descending", "ascending"); la pipeline usa solo la tabella `significance`
+    (FDR e `tot_var`).
+  - Il tutorial chiama `identifyTissueOutline()` e `identifySpatialOutliers()` con
+    `method = "obs"`; la pipeline con i valori predefiniti.
+  - `removeGenesStress()` è facoltativo nel tutorial e non è usato nella pipeline.
+
+---
+
+## 7. Perché l'arricchimento non è un buon benchmark fra metodi
+
+1. **Una classifica banale produce tanti pathway quanto i metodi.** Ordinando i geni
+   solo per espressione media, la GSEA dà quanti pathway con FDR < 0.05 dei metodi
+   veri. L'ordine casuale ne dà 0.
+
+   | Pathway con FDR < 0.05 (universo comune) | heme_1000 | stab_inj1 | stab_inj2 | gbm | perio | head_and_neck |
+   |---|---|---|---|---|---|---|
+   | Solo espressione | 750 | 915 | 801 | 1402 | 918 | 1647 |
+   | GLM lineare | 827 | 711 | 311 | 1195 | 761 | 1108 |
+   | SPATA2 | 133 | 106 | 190 | 348 | 393 | 27 |
+
+   In gbm (`pipeline_v8_noinfl`) l'ordinamento per espressione arriva a 1801.
+
+2. **Anche i pathway di contesto escono dalla sola espressione.** Nei dataset tumorali
+   l'ordinamento per espressione trova 107 (gbm) e 209 (head_and_neck) pathway di
+   contesto significativi. In head_and_neck sono più dei 190 del GLM.
+
+3. **Il numero di pathway segue la permissività del test, non la qualità
+   dell'ordine.** Quando ai GLM si applica un p-value corretto per l'autocorrelazione
+   (nullo spettrale), i pathway significativi in heme_1000 passano da 827 a 439, e da
+   311 a 48 in stab_inj2. L'AUC sul Golden Standard invece cambia di poco (0.978 →
+   0.963 in heme_1000).
+
+4. **Il conteggio dipende da come un metodo filtra i geni.** Con `rm_zero_infl` i
+   pathway significativi di SPATA2 in gbm passano da 118 a 205 e la frazione di
+   contesto da 0.305 a 0.180, mentre l'AUC di contesto cambia appena (0.662 → 0.634).
+
+5. **La frazione di contesto è calcolata su numeri piccoli per SPATA2.** In
+   head_and_neck sono 6 pathway di contesto su 27. Piccole variazioni spostano molto
+   la frazione.
+
+6. **L'AUC di contesto è instabile fra dataset e fra metodi.**
+   - Per il GLM lineare va da 0.447 (heme_1000) a 0.767 (stab_inj1).
+   - La classifica dei metodi cambia da un dataset all'altro: la frazione di contesto
+     di SPATA2 è più alta di quella del GLM in 5 dataset su 6 ma non in perio (circa
+     6% contro 9%).
+   - Il solo ordinamento per espressione ha AUC di contesto da 0.21 a 0.59 secondo il
+     dataset.
+
+7. **Il NES segue l'espressione per alcuni metodi.** La correlazione fra il NES del
+   GLM lineare e quello del controllo sull'espressione è 0.62 in gbm e 0.55 in
+   head_and_neck. Una parte dell'arricchimento del GLM in quei dataset è quindi
+   arricchimento per geni molto espressi.
+
+8. **La classifica non ha direzione.** La GSEA è fatta con `scoreType = "pos"` su
+   liste ordinate per significatività: i geni che salgono e quelli che scendono con
+   la distanza stanno insieme. I pathway in cima riflettono la composizione del
+   tessuto più che il processo biologico legato all'annotazione.
+
+9. **I "significativi" non sono calibrati per nessuno dei due metodi principali.**
+   - Con un centro finto, scelto lontano dalla lesione, il GLM parametrico trova
+     comunque da 1500 a 5000 geni BH-significativi (6 dataset).
+   - In heme_1000 un centro qualunque dà circa 3700 geni significativi, contro 6023
+     del centro vero.
+   - Il nullo di SPATA2 non ha struttura spaziale (§1).
+
+   Contare geni o pathway "significativi" confronta quindi due test entrambi troppo
+   ottimistici, ciascuno a modo suo.
+
+10. **Il Golden Standard misura l'ordine e regge.** L'AUC sul Golden Standard usa solo
+    l'ordine dei geni, non dipende dalla calibrazione dei p-value e dà un risultato
+    coerente in tutti e sei i dataset. Va però tenuto presente che in alcuni dataset il
+    Golden Standard è legato all'espressione: l'AUC del solo ordinamento per
+    espressione è 0.81 in gbm, 0.87 in head_and_neck, 0.71 in perio, 0.67 in heme_1000,
+    e sotto 0.5 nei due stab_inj. In gbm il Golden Standard ha 7280 geni, circa il 35%
+    di quelli testati.
