@@ -1,7 +1,8 @@
 # Report di sessione: arricchimenti, calibrazione dei test, SPATA2
 
 Report da passare a un'altra conversazione. Riassume cosa è stato fatto sulla
-pipeline `pipeline_v7`, cosa è stato scoperto, quali decisioni ha preso
+pipeline (partita come `pipeline_v7`, oggi `pipeline_v8` e `pipeline_v8_noinfl`),
+cosa è stato scoperto, quali decisioni ha preso
 l'autore e cosa resta aperto. Dove un'informazione è una deduzione non
 verificata, è indicato.
 
@@ -24,10 +25,15 @@ verificata, è indicato.
   (lesione cerebrale), gbm (glioblastoma, topo), perio (parodontite), head_and_neck
   (tumore). Contesto di arricchimento: "inflammation" per heme, stab, perio;
   "tumor" per gbm e head_and_neck.
-- **Codice:** repo GitHub `9nt0n10/RGdist`, branch `claude/nifty-ride-xypva8`
-  (nessuna pull request). Il file principale è `pipeline_v7.ipynb` (notebook R).
-  Ogni dataset ha un proprio notebook con lo stesso codice comune e un blocco
-  dataset diverso: **le modifiche vanno copiate negli altri notebook**.
+- **Codice:** la pipeline attuale esiste in due versioni, identiche tranne per
+  il parametro di SPATA2 `SPATA2_RM_ZERO_INFL`:
+  - `pipeline_v8`: `rm_zero_infl = TRUE`, output in cartelle `benchmark_v8/<dataset>`;
+  - `pipeline_v8_noinfl`: `rm_zero_infl = FALSE`, output in `benchmark_v8_noinfl/<dataset>`.
+  Entrambe contengono tutte le modifiche del §1. Nel repo GitHub `9nt0n10/RGdist`
+  (branch `claude/nifty-ride-xypva8`, nessuna pull request) lo stesso codice è
+  ancora salvato come `pipeline_v7.ipynb`: il nome nel repo non è stato
+  aggiornato. Ogni dataset ha un proprio notebook con lo stesso codice comune e
+  un blocco dataset diverso: **le modifiche vanno copiate negli altri notebook**.
 - **Regola di ordinamento dei geni (decisa dall'autore):** FDR crescente, poi la
   statistica del metodo come spareggio:
   - GLM: `log_p`;
@@ -35,7 +41,10 @@ verificata, è indicato.
   - SpatialDE: LLR;
   - SPATA2: `tot_var`.
 
-## 1. Modifiche fatte a `pipeline_v7.ipynb` (stato attuale del branch)
+## 1. Modifiche fatte alla pipeline (da `pipeline_v7` a `pipeline_v8`)
+
+Tutto quanto sotto è già in `pipeline_v8` e `pipeline_v8_noinfl` (nel repo:
+`pipeline_v7.ipynb`, ultimo commit del branch).
 
 ### 1.1 GSEA (sezione 16) semplificata
 - Una GSEA per metodo (`clusterProfiler::GSEA`) sulla lista ordinata come sopra.
@@ -91,8 +100,10 @@ Esempio di liste risultanti in perio: GLM 15163 geni; Moran e Laplacian 16790
   testati al 100%. Il rank grezzo inganna con liste di lunghezza diversa.
 - `METHOD_ORDER` (sezione 12) basato sul rank relativo invece che grezzo.
 - Riepilogo con i geni del GS presenti in ogni lista.
-- `SPATA2_RM_ZERO_INFL <- FALSE` fisso. Il commento attuale dice "default del
-  tool", ma probabilmente il default è FALSE (vedi §5).
+- Scegliere una sola versione: se si adotta `rm_zero_infl = FALSE`,
+  `pipeline_v8_noinfl` diventa la pipeline di riferimento. In entrambe il
+  commento accanto a `SPATA2_RM_ZERO_INFL` dice "default del tool", ma
+  probabilmente il default è FALSE (vedi §3.6).
 
 ## 2. Script autonomi creati (nel repo, fuori dalla pipeline)
 
@@ -197,14 +208,14 @@ eseguiti l'autore, e i numeri sotto vengono dai suoi output.
   activated" ponendola a TRUE, quindi il default sembra FALSE (da verificare con
   `formals(SPATA2::spatialAnnotationScreening)$rm_zero_infl`). Gli autori ne
   consigliano l'uso.
-- **perio, con TRUE:**
+- **perio, con TRUE (`pipeline_v8`):**
   - lista di 8999 geni contro 15163;
   - perde 126/353 geni del GS, quasi tutti dell'infiltrato immunitario (*CD3D*,
     *LCK*, *PTPRC*, *CXCR4*, *CCR7*, *CD79A*, immunoglobuline);
   - AUC SPATA2: 0.861 sulla propria lista, 0.554 con i mancanti in fondo;
   - GLM lineare: 0.895 (0.915–0.927 per i GLM con centro sui soli geni di SPATA2).
-- **gbm, TRUE contro FALSE (`confronto_zero_infl.R`, run `benchmark_v8` e
-  `benchmark_v8_noinfl`):**
+- **gbm, TRUE contro FALSE (`confronto_zero_infl.R` su `pipeline_v8`, output
+  `benchmark_v8/gbm`, e `pipeline_v8_noinfl`, output `benchmark_v8_noinfl/gbm`):**
   - lista 5455 contro 20503 (−73%);
   - GS nella lista 3549 contro 7280; tolti anche marcatori di proliferazione
     (*Mki67*, *Cdk1*, *Plk1*, *Bub1*);
@@ -214,7 +225,8 @@ eseguiti l'autore, e i numeri sotto vengono dai suoi output.
   - GLM lineare 0.949 in entrambe le letture;
   - controllo di coerenza ok (cambia solo SPATA2).
 - **Conclusione:** con `rm_zero_infl = TRUE` l'AUC di SPATA2 sale solo perché
-  metà del GS non viene valutata. Per il benchmark: FALSE. Un gene non testato
+  metà del GS non viene valutata. Per il benchmark: FALSE, cioè
+  `pipeline_v8_noinfl`. Un gene non testato
   equivale a "nessuna evidenza", quindi va in fondo; non si può dargli un p-value
   calcolato con un altro test senza smettere di valutare SPATA2.
 - **Copertura del GS senza filtro (gbm):** SPATA2 ha 7280 geni del GS, SpatialDE
@@ -242,8 +254,10 @@ eseguiti l'autore, e i numeri sotto vengono dai suoi output.
    Standard come misura principale.
 
 ## 5. Punti aperti
-- Implementare quanto in §1.4: AUC con GS mancanti in fondo, rank relativo,
-  `METHOD_ORDER`, copertura del GS, `rm_zero_infl = FALSE` con commento corretto.
+- Implementare quanto in §1.4 (AUC con GS mancanti in fondo, rank relativo,
+  `METHOD_ORDER`, copertura del GS) nella versione scelta, probabilmente
+  `pipeline_v8_noinfl`, e correggere il commento su `rm_zero_infl`.
+- Allineare il nome nel repo (`pipeline_v7.ipynb`) a quello locale.
 - Verificare che il p di SPATA2 dipenda solo da `tot_var`.
 - Allineare il preprocessing di SPATA2 al tutorial (`method = "obs"` ecc.) e
   decidere su `removeGenesStress()` e SPARK-X (con i geni non selezionati da
